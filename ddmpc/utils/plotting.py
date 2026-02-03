@@ -187,7 +187,13 @@ class Plotter:
     @staticmethod
     def setup():
 
-        locale.setlocale(locale.LC_ALL, 'deu_deu')
+        # Try different locale settings for cross-platform compatibility
+        for loc in ['de_DE.UTF-8', 'de_DE', 'deu_deu', '']:
+            try:
+                locale.setlocale(locale.LC_ALL, loc)
+                break
+            except locale.Error:
+                continue
 
         matplotlib.rcParams['mathtext.fontset'] = 'custom'
         matplotlib.rcParams['mathtext.rm'] = 'Bitstream Vera Sans'
