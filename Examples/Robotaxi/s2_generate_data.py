@@ -8,6 +8,7 @@ This script runs a PID controller to:
 """
 
 from configuration import *
+from controllers import FixedPID
 
 # =============================================================================
 # SIMULATION CONFIGURATION
@@ -28,15 +29,29 @@ scenario = 'summer_city'
 # =============================================================================
 
 # PID for cooling: if T_cabin > target, increase u_hvac
-pid_controller = PID(
-    y=T_cabin,          # Controlled variable
-    u=u_hvac,           # Control variable
-    step_size=one_minute,
-    Kp=0.5,             # Proportional gain
-    Ti=100.0,           # Integral time constant [s] (Ti = Kp/Ki)
-    Td=0.0,             # Derivative time constant
-    reverse_act=True,   # For cooling: increase u when T > target
-)
+# u_recirc stays at default (0.5) during PID operation
+if scenario in ('winter_highway', 'winter_city'):
+    # Heating: low Kp needed due to low UA (27.5 W/K) and PLR-COP amplification
+    pid_controller = FixedPID(
+        y=T_cabin,
+        u=u_hvac,
+        step_size=one_minute,
+        Kp=0.06,
+        Ti=100.0,
+        Td=0.0,
+        reverse_act=False,  # Heating: increase u when T < target
+    )
+else:
+    # Cooling (summer, mild)
+    pid_controller = FixedPID(
+        y=T_cabin,
+        u=u_hvac,
+        step_size=one_minute,
+        Kp=0.3,
+        Ti=100.0,
+        Td=0.0,
+        reverse_act=True,   # Cooling: increase u when T > target
+    )
 
 # =============================================================================
 # RUN SIMULATION
@@ -90,6 +105,20 @@ if __name__ == "__main__":
 
     u_mean = df['hvac_modulation'].mean()
     print(f"\nHVAC Utilization: {u_mean*100:.1f}%")
+
+    # CO2 results
+    if 'co2_concentration' in df.columns:
+        co2_max = df['co2_concentration'].max()
+        co2_mean = df['co2_concentration'].mean()
+        print(f"\nCO2:")
+        print(f"  Mean: {co2_mean:.0f} ppm")
+        print(f"  Max:  {co2_max:.0f} ppm")
+        print(f"  Limit: 1200 ppm")
+
+    # Mass temperature
+    if 'mass_temperature' in df.columns:
+        T_mass_mean = df['mass_temperature'].mean() - 273.15
+        print(f"\nMass Temperature: {T_mass_mean:.1f}°C (mean)")
 
     # Plot results
     print("\nPlotting results...")

@@ -66,6 +66,44 @@ T_cabin = Controlled(
 )
 T_cabin_change = Connection(Change(base=T_cabin))
 
+# Interior mass temperature [K] - tracked for physics coupling
+T_mass_steady = Steady(
+    day_start=6,
+    day_end=22,
+    day_target=295.15,      # Same target as air (equilibrium goal)
+    night_target=293.15,
+)
+
+T_mass = Controlled(
+    source=Readable(
+        name="T_mass",
+        read_name="mass_temperature",
+        plt_opts=PlotOptions(color=dark_red, line=line_dotted, label="T_mass"),
+    ),
+    mode=T_mass_steady,
+)
+T_mass_change = Connection(Change(base=T_mass))
+
+# CO2 concentration [ppm]
+C_CO2_economic = Economic(
+    day_start=0,
+    day_end=24,
+    day_lb=400,       # Slightly below ambient
+    day_ub=1000,      # ASHRAE recommended upper limit
+    night_lb=400,
+    night_ub=1200,    # Relaxed at night
+)
+
+C_CO2 = Controlled(
+    source=Readable(
+        name="C_CO2",
+        read_name="co2_concentration",
+        plt_opts=PlotOptions(color=green, line=line_solid, label="CO2"),
+    ),
+    mode=C_CO2_economic,
+)
+C_CO2_change = Connection(Change(base=C_CO2))
+
 # HVAC electrical power consumption [W]
 P_hvac = Controlled(
     source=Readable(
@@ -93,6 +131,34 @@ u_hvac = Control(
     cutoff=0.05,
 )
 u_hvac_change = Connection(Change(base=u_hvac))
+
+# PTC heater modulation signal [0-1] (independent from heat pump)
+u_ptc = Control(
+    source=Readable(
+        name="u_ptc",
+        read_name="ptc_modulation",
+        plt_opts=PlotOptions(color=red, line=line_dotted, label="u_ptc"),
+    ),
+    lb=0,       # Off
+    ub=1,       # Maximum capacity
+    default=0,
+    cutoff=0.05,
+)
+u_ptc_change = Connection(Change(base=u_ptc))
+
+# Recirculation control [0-1]: 0=full fresh air, 1=full recirculation
+u_recirc = Control(
+    source=Readable(
+        name="u_recirc",
+        read_name="recirc_modulation",
+        plt_opts=PlotOptions(color=green, line=line_dotted, label="u_recirc"),
+    ),
+    lb=0,       # Full fresh air
+    ub=1,       # Full recirculation
+    default=0.5,
+    cutoff=0.05,
+)
+u_recirc_change = Connection(Change(base=u_recirc))
 
 # =============================================================================
 # DISTURBANCES (External inputs with forecasts)
@@ -275,20 +341,39 @@ system = RobotaxiCabinSimulator(
     model=model,
     step_size=one_minute,           # 1 minute control steps
     time_offset=time_offset,
-    # Cabin parameters
-    C_cabin=50000.0,                # Thermal capacity [J/K]
-    UA=80.0,                        # Heat transfer coefficient [W/K]
+    # Air node parameters
+    C_cabin=50000.0,                # Air thermal capacity [J/K]
+    # Transmission parameters (separate paths)
+    UA_opaque=15.0,                 # Opaque envelope [W/K] (roof+walls+floor)
+    UA_window=12.5,                 # Windows [W/K]
     A_window=2.5,                   # Window area [m²]
     tau_window=0.6,                 # Window transmittance [-]
+    # Interior mass parameters
+    C_mass=120000.0,                # Interior mass [J/K] (dashboard, seats, trim)
+    h_conv=10.0,                    # Convective HTC interior [W/(m²K)]
+    A_int=8.0,                      # Interior surface area [m²]
+    f_solar_air=0.3,                # Solar fraction to air
+    f_solar_mass=0.7,               # Solar fraction to mass
     # Heat Pump parameters
     Q_hp_max_cool=5000.0,           # Max HP cooling power [W]
     Q_hp_max_heat=4000.0,           # Max HP heating power [W]
+    alpha_plr=0.3,                  # COP partial load factor [-]
     # PTC Heater parameters
     Q_ptc_max=6000.0,               # Max PTC power [W]
     T_ptc_threshold=268.15,         # PTC activation below -5°C
+    # Fresh air / recirculation
+    m_dot_blower=0.08,              # Blower mass flow [kg/s]
+    c_p_air=1005.0,                 # Specific heat of air [J/(kg*K)]
+    # CO2 parameters
+    V_cabin=3.0,                    # Cabin volume [m³]
+    R_CO2=5e-6,                     # CO2 per person [m³/s]
+    C_CO2_ambient=420.0,            # Ambient CO2 [ppm]
+    rho_air=1.2,                    # Air density [kg/m³]
     # Initial conditions
-    T_cabin_init=293.15,            # Initial 20°C
+    T_cabin_init=293.15,            # Initial air temp 20°C
+    T_mass_init=293.15,             # Initial mass temp 20°C
     T_target=295.15,                # Target 22°C
+    C_CO2_init=420.0,               # Initial CO2 [ppm]
 )
 
 # =============================================================================
@@ -297,8 +382,9 @@ system = RobotaxiCabinSimulator(
 
 # Plotter for PID baseline controller
 pid_plotter = Plotter(
-    SubPlot(features=[T_cabin], y_label="Cabin Temp [°C]", shift=273.15),
-    SubPlot(features=[P_hvac], y_label="HVAC Power [W]"),
+    SubPlot(features=[T_cabin, T_mass], y_label="Temperatures [°C]", shift=273.15),
+    SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
+    SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
     SubPlot(features=[u_hvac], y_label="HVAC Signal [-]", step=True),
     SubPlot(features=[T_ambient], y_label="Ambient Temp [°C]", shift=273.15),
     SubPlot(features=[n_passengers], y_label="Passengers [-]"),
@@ -306,9 +392,10 @@ pid_plotter = Plotter(
 
 # Plotter for MPC controller
 mpc_plotter = Plotter(
-    SubPlot(features=[T_cabin], y_label="Cabin Temp [°C]", shift=273.15),
-    SubPlot(features=[P_hvac], y_label="HVAC Power [W]"),
-    SubPlot(features=[u_hvac], y_label="HVAC Signal [-]", step=True),
+    SubPlot(features=[T_cabin, T_mass], y_label="Temperatures [°C]", shift=273.15),
+    SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
+    SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
+    SubPlot(features=[u_hvac, u_ptc, u_recirc], y_label="Controls [-]", step=True),
     SubPlot(features=[T_ambient], y_label="Ambient Temp [°C]", shift=273.15),
     SubPlot(features=[solar_radiation], y_label="Solar [W/m²]"),
     SubPlot(features=[n_passengers], y_label="Passengers [-]"),
