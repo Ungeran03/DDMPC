@@ -15,7 +15,7 @@ A new example demonstrates **MPC for autonomous robotaxi cabin climate control**
 ### Why MPC for Robotaxis?
 
 1. **Predictive passenger preparation**: MPC pre-cools/pre-heats before passengers board (known from booking schedule), while PID only reacts after temperature deviates.
-2. **Active CO2 control**: MPC simultaneously optimizes `u_hvac` and `u_recirc` to balance energy vs air quality. PID can only control `u_hvac`; `u_recirc` stays fixed at 0.5.
+2. **Active CO2 control**: MPC simultaneously optimizes `u_hvac`, `u_blower`, and `u_recirc` to balance energy vs air quality. PID only controls `u_hvac` + `u_blower`; `u_recirc` stays fixed at 0.5.
 3. **Energy efficiency via PLR-COP**: MPC can deliberately operate at partial load (better COP) over longer periods rather than short full-load bursts.
 4. **Thermal mass as storage**: MPC knows `T_mass` dynamics and can plan around thermal inertia instead of fighting it.
 5. **SOC-aware operation**: When battery is low, MPC relaxes comfort to preserve range (stage parameter weighting). PID has no concept of energy cost.
@@ -26,7 +26,7 @@ A new example demonstrates **MPC for autonomous robotaxi cabin climate control**
 Examples/Robotaxi/
 ├── configuration.py      # Features, variables, system definition
 ├── cabin_simulator.py    # Two-node thermal cabin model (simulation environment)
-├── controllers.py        # FixedPID controller (corrected anti-windup)
+├── controllers.py        # FixedPID, BlowerPI controllers
 ├── s2_generate_data.py   # PID baseline test (scenario-adaptive parameters)
 ├── s3_T_cabin_WB.py      # 3 WhiteBox predictors for MPC
 ├── s4_mpc.py             # MPC vs PID comparison
@@ -43,6 +43,7 @@ Variables the MPC directly optimizes at each time step:
 |----|-------|-------------|
 | `u_hvac` | [0, 1] | Heat pump compressor modulation |
 | `u_ptc` | [0, 1] | PTC heater modulation (independent, only available when T_amb < -5C) |
+| `u_blower` | [0.1, 1] | Blower fan speed — scales HVAC heat transfer and fresh air flow |
 | `u_recirc` | [0, 1] | Recirculation (0=fresh air, 1=full recirculation) |
 
 ### Measured Disturbances (MD)
@@ -92,8 +93,9 @@ At SOC=10%: half comfort weight. At SOC=5%: quarter. Temperature drifts toward a
 
 **Air Node (T_cabin):**
 ```
-C_air * dT_air/dt = Q_hvac + Q_ptc + f_solar_air*Q_solar + Q_passengers
+C_air * dT_air/dt = u_blower*(Q_hp_raw + Q_ptc_raw) + f_solar_air*Q_solar + Q_passengers
                   + Q_transmission + h_conv*A_int*(T_mass - T_air) + Q_fresh
+where Q_fresh uses m_dot = m_dot_max * u_blower * (1 - u_recirc)
 ```
 
 **Mass Node (T_mass) — interior surfaces (dashboard, seats, trim):**
@@ -104,6 +106,7 @@ C_mass * dT_mass/dt = f_solar_mass*Q_solar + h_conv*A_int*(T_air - T_mass)
 **CO2 Balance:**
 ```
 V_cabin * dC_CO2/dt = n*R_CO2 - m_dot_fresh*(C_CO2 - C_ambient)/rho_air
+where m_dot_fresh = m_dot_max * u_blower * (1 - u_recirc)
 ```
 
 ### Heat Flow Components
@@ -113,10 +116,10 @@ V_cabin * dC_CO2/dt = n*R_CO2 - m_dot_fresh*(C_CO2 - C_ambient)/rho_air
 | Q_transmission | (UA_opaque + UA_window) * (T_amb - T_cabin) |
 | Q_solar | A_window * tau * I_solar * f(heading), split 30% air / 70% mass |
 | Q_passengers | n * 90 W (0-4 passengers from booking schedule) |
-| Q_fresh | m_dot_blower * (1-u_recirc) * c_p * (T_amb - T_cabin) |
+| Q_fresh | m_dot_max * u_blower * (1-u_recirc) * c_p * (T_amb - T_cabin) |
 | Q_conv | h_conv * A_int * (T_mass - T_cabin) |
-| Q_hp | u * Q_max * eta_radiator(v), COP with PLR correction |
-| Q_ptc | u * Q_ptc_max (only when T_amb < -5C) |
+| Q_hp | u_blower * u_hvac * Q_max * eta_radiator(v), COP with PLR correction |
+| Q_ptc | u_blower * u_ptc * Q_ptc_max (only when T_amb < -5C) |
 
 ### HVAC System Components
 
@@ -137,12 +140,18 @@ V_cabin * dC_CO2/dt = n*R_CO2 - m_dot_fresh*(C_CO2 - C_ambient)/rho_air
    - COP = 1.0, Max: 6,000 W, Activation: T_amb < -5C
    - Used alongside heat pump in `heating_ptc` mode
 
-4. **Fresh Air / Recirculation** (u_recirc control)
+4. **Blower Fan** (u_blower control)
+   - Scales all HVAC heat transfer to cabin: Q_eff = u_blower * Q_raw
+   - Also scales fresh air flow: m_dot_fresh = m_dot_max * u_blower * (1 - u_recirc)
+   - Without blower, no warm/cold air enters the cabin
+   - Range [0.1, 1.0]: minimum 0.1 for ventilation
+
+5. **Fresh Air / Recirculation** (u_recirc control)
    - u_recirc = 0: full fresh air (thermal load, but good air quality)
    - u_recirc = 1: full recirculation (no thermal load, CO2 builds up)
-   - Coupling: m_dot_fresh = m_dot_blower * (1 - u_recirc)
+   - Coupling: m_dot_fresh = m_dot_max * u_blower * (1 - u_recirc)
 
-5. **CO2 Tracking**
+6. **CO2 Tracking**
    - Constraint: C_CO2 <= 1200 ppm (Pettenkofer limit)
    - Coupled with u_recirc: MPC balances energy vs air quality
    - PID cannot control this (u_recirc fixed at 0.5)
@@ -160,7 +169,7 @@ V_cabin * dC_CO2/dt = n*R_CO2 - m_dot_fresh*(C_CO2 - C_ambient)/rho_air
 | h_conv | 10.0 W/(m2K) | Interior convective HTC |
 | A_int | 8.0 m2 | Interior surface area |
 | alpha_plr | 0.3 | COP partial load factor |
-| m_dot_blower | 0.08 kg/s | Blower mass flow |
+| m_dot_blower_max | 0.08 kg/s | Max blower mass flow (scaled by u_blower) |
 | V_cabin | 3.0 m3 | Cabin volume |
 | R_CO2 | 5e-6 m3/s | CO2 generation per person |
 | C_CO2_ambient | 420 ppm | Ambient CO2 |
@@ -192,29 +201,52 @@ Deterministic booking schedule with stops every 10 minutes. Passenger count vari
 
 Schedule (30-entry cycle): `[1, 3, 2, 0, 4, 2, 1, 3, 0, 2, 4, 1, 3, 2, 0, 1, 4, 3, 2, 1, 0, 3, 2, 4, 1, 0, 3, 4, 2, 1]`
 
-## PID Baseline (FixedPID, optimized parameters, 0-4 passengers)
+## PID Baseline (FixedPID + BlowerPI, 0-4 passengers)
 
-| Scenario | Kp | Ti | reverse_act | T_mean | Settled Std | Settled Range | CO2 max | Energy | Status |
-|----------|-----|------|-------------|--------|-------------|---------------|---------|--------|--------|
-| Summer City | 0.30 | 100 | True | 22.14C | 0.11K | [21.6, 22.4]C | 1020 ppm | 1,124 Wh | PASS |
-| Winter Highway | 0.06 | 100 | False | 21.86C | 0.07K | [21.7, 22.3]C | 1020 ppm | 5,295 Wh | PASS |
+The PID baseline uses two controllers:
+1. **FixedPID**: Controls `u_hvac` based on T_cabin error (scenario-specific gains)
+2. **BlowerPI**: Controls `u_blower` — proportional response to abs(T_cabin error) with exponential smoothing and minimum ventilation floor
 
-Energy breakdown (Winter Highway): HP 1,989 Wh (38%) + PTC 3,306 Wh (62%) = 5,295 Wh total.
+PTC auto-mirrors u_hvac in the simulator when no controller sets it explicitly.
+
+### BlowerPI Design
+
+Proportional + exponential smoothing (no integral → no windup issues):
+```
+target = Kp * |error| + min_vent        # proportional + floor
+output = alpha * target + (1-alpha) * output_prev   # smoothing
+alpha  = step_size / tau
+```
+
+- **Transient** (large error): blower ramps to 1.0
+- **Steady state** (small error): blower settles at ~min_vent (0.5)
+- **Passenger disturbance**: error rises → blower ramps up → more fresh air
+
+Parameters: `Kp=1.0, tau=300s, min_vent=0.5`
+
+### Results
+
+| Scenario | Kp_hvac | Ti | reverse_act | T_mean | T_range | CO2 max | Energy |
+|----------|---------|------|-------------|--------|---------|---------|--------|
+| Summer City | 0.30 | 100 | True | 22.2C | [21.5, 35.0]C | 1532 ppm | 1,674 Wh |
+| Winter Highway | 0.04 | 100 | False | 21.8C | [-10.0, 26.0]C | 1514 ppm | 6,592 Wh |
+
+Note: CO2 exceeds 1200 ppm with 4 passengers. This is a fundamental PID limitation — the BlowerPI is driven by temperature error, not CO2. With u_recirc fixed at 0.5 and 4 passengers, u_blower ≈ 0.77 would be needed for CO2 < 1200 ppm. MPC resolves this through coordinated u_blower/u_recirc optimization with a hard CO2 constraint.
 
 ### PID Tuning Notes
 
-- Winter requires much lower Kp (0.06 vs 0.3) due to low UA (27.5 W/K) and PLR-COP amplification
-- Sharp stability boundary at Kp~0.08: above this, controller oscillates with 0-4 passenger disturbances
-- CO2 reaches 1020 ppm with 4 passengers at u_recirc=0.5 (PID cannot control u_recirc)
+- Winter requires much lower Kp (0.04 vs 0.3) due to blower coupling + PLR-COP amplification
+- Blower coupling: Q_eff = u_blower * Q_raw. During warmup u_blower→1.0; at steady state ~0.5
+- BlowerPI min_vent=0.5 ensures minimum ventilation; tau=300s smooths transitions
 - Summer cooldown from 35C to 22C takes ~20 min; mass (45C) takes ~100 min
-- Winter warmup from -10C to 22C takes ~30 min; mass takes ~60 min
+- Winter warmup from -10C to 22C takes ~25 min; overshoot to ~26C before settling
 
 ### PID Limitations (MPC advantages)
 
-- PID only controls `u_hvac`; `u_ptc` mirrors u_hvac automatically, `u_recirc` stays fixed at 0.5
+- PID controls `u_hvac` + `u_blower`; `u_ptc` mirrors u_hvac automatically, `u_recirc` stays fixed at 0.5
 - No independent PTC control (MPC can prefer heat pump over PTC for better COP)
 - No anticipation of passenger changes (reactive only)
-- No CO2 optimization (uncontrolled, reaches 1020 ppm with 4 passengers)
+- **CO2 violation with 4 passengers**: BlowerPI driven by temperature, not air quality → CO2 peaks ~1500 ppm. MPC keeps CO2 < 1200 ppm via coordinated u_blower + u_recirc
 - No SOC awareness (same energy usage regardless of battery state)
 - Cannot exploit thermal mass dynamics
 
@@ -222,9 +254,9 @@ Energy breakdown (Winter Highway): HP 1,989 Wh (38%) + PTC 3,306 Wh (62%) = 5,29
 
 | Predictor | Output | Inputs | ODE |
 |-----------|--------|--------|-----|
-| T_cabin | dT_air | T_cabin, T_mass, T_amb, u_hvac, u_ptc, u_recirc, solar, n_pass, v, heading | Air energy balance |
+| T_cabin | dT_air | T_cabin, T_mass, T_amb, u_hvac, u_ptc, u_blower, u_recirc, solar, n_pass, v, heading | Air energy balance |
 | T_mass | dT_mass | T_cabin, T_mass, solar, heading | Mass energy balance |
-| CO2 | dC_CO2 | C_CO2, n_pass, u_recirc | CO2 mass balance |
+| CO2 | dC_CO2 | C_CO2, n_pass, u_blower, u_recirc | CO2 mass balance |
 
 The WhiteBox models use CasADi symbolic expressions, matching the physics in `cabin_simulator.py`. The `hvac_mode` parameter selects cooling or heating formulation for the T_cabin predictor (COP affects Q_hp differently in each mode).
 
@@ -267,28 +299,28 @@ To switch scenarios, change `scenario = 'winter_highway'` in s2_generate_data.py
 **Important:** The standard DDMPC `PID` has an anti-windup bug (see Known Issues). Always use `FixedPID` from `Examples/Robotaxi/controllers.py` for stable operation.
 
 ```python
-from controllers import FixedPID
+from controllers import FixedPID, BlowerPI
 
 # For cooling scenarios (reverse_act=True)
 pid = FixedPID(
-    y=T_cabin,           # Controlled variable (Controlled)
-    u=u_hvac,            # Control variable (Control)
-    step_size=one_minute,
-    Kp=0.3,              # Proportional gain
-    Ti=100.0,            # Integral time constant [s]
-    Td=0.0,              # Derivative time constant
-    reverse_act=True,    # True for cooling (increase u when T > target)
+    y=T_cabin, u=u_hvac, step_size=one_minute,
+    Kp=0.3, Ti=100.0, reverse_act=True,
 )
 
 # For heating scenarios (reverse_act=False)
 pid = FixedPID(
-    y=T_cabin,
-    u=u_hvac,
-    step_size=one_minute,
-    Kp=0.06,
-    Ti=100.0,
-    reverse_act=False,   # False for heating
+    y=T_cabin, u=u_hvac, step_size=one_minute,
+    Kp=0.04, Ti=100.0, reverse_act=False,
 )
+
+# Blower PI (same for all scenarios)
+blower = BlowerPI(
+    y=T_cabin, u=u_blower, step_size=one_minute,
+    Kp=0.2, Ti=150.0,
+)
+
+# Run with both controllers
+system.run(duration=..., controllers=(pid, blower))
 ```
 
 ### MPC Controller (NLP Pattern)
@@ -306,11 +338,13 @@ mpc = ModelPredictive(
             Objective(feature=C_CO2, cost=Quadratic(weight=50)),
             Objective(feature=u_hvac_change, cost=Quadratic(weight=10)),
             Objective(feature=u_ptc_change, cost=Quadratic(weight=10)),
+            Objective(feature=u_blower_change, cost=Quadratic(weight=5)),
             Objective(feature=u_recirc_change, cost=Quadratic(weight=5)),
         ],
         constraints=[
             Constraint(feature=u_hvac, lb=0, ub=1),
             Constraint(feature=u_ptc, lb=0, ub=1),
+            Constraint(feature=u_blower, lb=0.1, ub=1),
             Constraint(feature=u_recirc, lb=0, ub=1),
             Constraint(feature=C_CO2, lb=0, ub=1200),
         ],
@@ -387,7 +421,8 @@ for loc in ['de_DE.UTF-8', 'de_DE', 'deu_deu', '']:
 ## Next Steps / TODO
 
 - [ ] Run MPC vs PID comparison (s4_mpc.py)
-- [x] Tune PID gains for winter scenario with new UA (Kp=0.06, Ti=100)
+- [x] Tune PID gains for winter scenario with blower coupling (Kp=0.04, Ti=100)
+- [x] Add u_blower as MV with BlowerPI controller and blower coupling physics
 - [ ] Implement SOC-dependent comfort weighting as stage parameter in MPC
 - [ ] Optional: EQT comfort metric (Schutzeich)
 - [ ] Validate with real vehicle data (future)

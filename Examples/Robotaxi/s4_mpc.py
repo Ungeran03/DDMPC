@@ -12,7 +12,7 @@ Comparison: MPC vs PID baseline
 
 from configuration import *
 from s3_T_cabin_WB import create_whitebox_T_cabin, create_whitebox_T_mass, create_whitebox_CO2
-from controllers import FixedPID
+from controllers import FixedPID, BlowerPI
 from ddmpc.controller.model_predictive.nlp import NLP, Objective, Constraint
 from ddmpc.controller.model_predictive.costs import Quadratic, AbsoluteLinear
 
@@ -60,12 +60,14 @@ mpc_controller = ModelPredictive(
             # Control smoothness
             Objective(feature=u_hvac_change, cost=Quadratic(weight=10.0)),
             Objective(feature=u_ptc_change, cost=Quadratic(weight=10.0)),
+            Objective(feature=u_blower_change, cost=Quadratic(weight=5.0)),
             Objective(feature=u_recirc_change, cost=Quadratic(weight=5.0)),
         ],
         constraints=[
             # Control bounds
             Constraint(feature=u_hvac, lb=0, ub=1),
             Constraint(feature=u_ptc, lb=0, ub=1),
+            Constraint(feature=u_blower, lb=0.1, ub=1),
             Constraint(feature=u_recirc, lb=0, ub=1),
             # Hard CO2 safety limit
             Constraint(feature=C_CO2, lb=0, ub=1200),
@@ -86,13 +88,19 @@ mpc_controller = ModelPredictive(
 if scenario in ('winter_highway', 'winter_city'):
     pid_controller = FixedPID(
         y=T_cabin, u=u_hvac, step_size=one_minute,
-        Kp=0.06, Ti=100.0, Td=0.0, reverse_act=False,
+        Kp=0.04, Ti=100.0, Td=0.0, reverse_act=False,
     )
 else:
     pid_controller = FixedPID(
         y=T_cabin, u=u_hvac, step_size=one_minute,
         Kp=0.3, Ti=100.0, Td=0.0, reverse_act=True,
     )
+
+# Blower for PID baseline
+blower_pi = BlowerPI(
+    y=T_cabin, u=u_blower, step_size=one_minute,
+    Kp=1.0, tau=300.0, min_vent=0.5,
+)
 
 # =============================================================================
 # SOLVER OPTIONS
@@ -128,7 +136,7 @@ if __name__ == "__main__":
 
     dc_pid = system.run(
         duration=simulation_duration,
-        controllers=(pid_controller,),
+        controllers=(pid_controller, blower_pi),
     )
     results['PID'] = dc_pid.df.copy()
 

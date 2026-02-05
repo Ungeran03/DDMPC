@@ -146,6 +146,20 @@ u_ptc = Control(
 )
 u_ptc_change = Connection(Change(base=u_ptc))
 
+# Blower fan speed [0.1-1.0]: controls airflow through HVAC and fresh air
+u_blower = Control(
+    source=Readable(
+        name="u_blower",
+        read_name="blower_modulation",
+        plt_opts=PlotOptions(color=grey, line=line_solid, label="u_blower"),
+    ),
+    lb=0.1,     # Minimum for air quality
+    ub=1,       # Maximum fan speed
+    default=0.5,
+    cutoff=0.05,
+)
+u_blower_change = Connection(Change(base=u_blower))
+
 # Recirculation control [0-1]: 0=full fresh air, 1=full recirculation
 u_recirc = Control(
     source=Readable(
@@ -362,7 +376,7 @@ system = RobotaxiCabinSimulator(
     Q_ptc_max=6000.0,               # Max PTC power [W]
     T_ptc_threshold=268.15,         # PTC activation below -5°C
     # Fresh air / recirculation
-    m_dot_blower=0.08,              # Blower mass flow [kg/s]
+    m_dot_blower_max=0.08,           # Max blower mass flow [kg/s]
     c_p_air=1005.0,                 # Specific heat of air [J/(kg*K)]
     # CO2 parameters
     V_cabin=3.0,                    # Cabin volume [m³]
@@ -385,7 +399,7 @@ pid_plotter = Plotter(
     SubPlot(features=[T_cabin, T_mass], y_label="Temperatures [°C]", shift=273.15),
     SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
     SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
-    SubPlot(features=[u_hvac], y_label="HVAC Signal [-]", step=True),
+    SubPlot(features=[u_hvac, u_blower], y_label="Controls [-]", step=True),
     SubPlot(features=[T_ambient], y_label="Ambient Temp [°C]", shift=273.15),
     SubPlot(features=[n_passengers], y_label="Passengers [-]"),
 )
@@ -395,7 +409,7 @@ mpc_plotter = Plotter(
     SubPlot(features=[T_cabin, T_mass], y_label="Temperatures [°C]", shift=273.15),
     SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
     SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
-    SubPlot(features=[u_hvac, u_ptc, u_recirc], y_label="Controls [-]", step=True),
+    SubPlot(features=[u_hvac, u_ptc, u_blower, u_recirc], y_label="Controls [-]", step=True),
     SubPlot(features=[T_ambient], y_label="Ambient Temp [°C]", shift=273.15),
     SubPlot(features=[solar_radiation], y_label="Solar [W/m²]"),
     SubPlot(features=[n_passengers], y_label="Passengers [-]"),

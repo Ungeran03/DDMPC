@@ -43,7 +43,7 @@ alpha_plr = 0.3              # COP partial load factor [-]
 Q_ptc_max = 6000.0           # Max PTC power [W]
 
 # Fresh air / recirculation
-m_dot_blower = 0.08          # Blower flow [kg/s]
+m_dot_blower_max = 0.08     # Max blower flow [kg/s]
 c_p_air = 1005.0             # Specific heat [J/(kg*K)]
 
 # CO2
@@ -75,6 +75,7 @@ def create_whitebox_T_cabin(hvac_mode: str = 'cooling') -> WhiteBox:
     T_amb = T_ambient.source[0]
     u = u_hvac.source[0]
     u_p = u_ptc.source[0]
+    u_bl = u_blower.source[0]
     u_rec = u_recirc.source[0]
     I_solar = solar_radiation.source[0]
     n_pass = n_passengers.source[0]
@@ -95,21 +96,25 @@ def create_whitebox_T_cabin(hvac_mode: str = 'cooling') -> WhiteBox:
     Q_passengers = n_pass * 90.0
     Q_conv = h_conv * A_int * (T_m - T_cab)
 
-    # Fresh air thermal load
-    m_dot_fresh = m_dot_blower * (1 - u_rec)
+    # Fresh air thermal load (scaled by blower)
+    m_dot_fresh = m_dot_blower_max * u_bl * (1 - u_rec)
     Q_fresh = m_dot_fresh * c_p_air * (T_amb - T_cab)
 
-    # HVAC with PLR-dependent COP
+    # HVAC with PLR-dependent COP (raw, before blower scaling)
     if hvac_mode == 'cooling':
-        Q_hvac = -u * Q_hvac_max_cool * eta_radiator
+        Q_hvac_raw = -u * Q_hvac_max_cool * eta_radiator
     else:
         # Heating: COP amplifies thermal output, PLR improves COP
         COP_base = 3.0  # Simplified average heating COP for WB
         COP_eff = COP_base * (1 + alpha_plr * (1 - u))
-        Q_hvac = u * Q_hvac_max_heat * eta_radiator * COP_eff
+        Q_hvac_raw = u * Q_hvac_max_heat * eta_radiator * COP_eff
 
-    # PTC heater (COP=1, independent control)
-    Q_ptc = u_p * Q_ptc_max
+    # PTC heater (COP=1, independent control, raw)
+    Q_ptc_raw = u_p * Q_ptc_max
+
+    # Blower coupling: without blower, no heat reaches the cabin
+    Q_hvac = u_bl * Q_hvac_raw
+    Q_ptc = u_bl * Q_ptc_raw
 
     # Total and temperature change
     Q_total = Q_hvac + Q_ptc + Q_solar_air + Q_passengers + Q_transmission + Q_conv + Q_fresh
@@ -122,6 +127,7 @@ def create_whitebox_T_cabin(hvac_mode: str = 'cooling') -> WhiteBox:
             T_ambient.source,
             u_hvac.source,
             u_ptc.source,
+            u_blower.source,
             u_recirc.source,
             solar_radiation.source,
             n_passengers.source,
@@ -189,10 +195,11 @@ def create_whitebox_CO2() -> WhiteBox:
 
     C_co2 = C_CO2.source[0]
     n_pass = n_passengers.source[0]
+    u_bl = u_blower.source[0]
     u_rec = u_recirc.source[0]
 
-    # Fresh air volumetric flow
-    m_dot_fresh = m_dot_blower * (1 - u_rec)
+    # Fresh air volumetric flow (scaled by blower)
+    m_dot_fresh = m_dot_blower_max * u_bl * (1 - u_rec)
     Q_vol_fresh = m_dot_fresh / rho_air
 
     # CO2 generation [ppm/s]
@@ -208,6 +215,7 @@ def create_whitebox_CO2() -> WhiteBox:
         inputs=[
             C_CO2.source,
             n_passengers.source,
+            u_blower.source,
             u_recirc.source,
         ],
         output=C_CO2_change,

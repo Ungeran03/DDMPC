@@ -21,8 +21,9 @@ HVAC System Components:
    - Fresh air brings thermal load but reduces CO2
 
 Energy Balance (Air Node):
-    C_cabin * dT_air/dt = Q_hvac + Q_ptc + f_solar_air*Q_solar + Q_passengers
+    C_cabin * dT_air/dt = u_blower*(Q_hp + Q_ptc) + f_solar_air*Q_solar + Q_passengers
                         + Q_transmission + Q_conv(T_mass - T_air) + Q_fresh
+    where Q_fresh uses variable m_dot = m_dot_max * u_blower
 
 Energy Balance (Mass Node):
     C_mass * dT_mass/dt = f_solar_mass*Q_solar + Q_conv(T_air - T_mass)
@@ -77,8 +78,8 @@ class RobotaxiCabinSimulator(System):
             # PTC Heater parameters
             Q_ptc_max: float = 6000.0,       # Max PTC power [W]
             T_ptc_threshold: float = 268.15, # PTC activation threshold [K] (-5°C)
-            # Fresh air / recirculation parameters
-            m_dot_blower: float = 0.08,      # Blower mass flow rate [kg/s]
+            # Blower / fresh air parameters
+            m_dot_blower_max: float = 0.08,  # Max blower mass flow rate [kg/s]
             c_p_air: float = 1005.0,         # Specific heat of air [J/(kg*K)]
             # CO2 parameters
             V_cabin: float = 3.0,            # Cabin air volume [m³]
@@ -122,8 +123,8 @@ class RobotaxiCabinSimulator(System):
         self.Q_ptc_max = Q_ptc_max
         self.T_ptc_threshold = T_ptc_threshold
 
-        # Fresh air / recirculation parameters
-        self.m_dot_blower = m_dot_blower
+        # Blower / fresh air parameters
+        self.m_dot_blower_max = m_dot_blower_max
         self.c_p_air = c_p_air
 
         # CO2 parameters
@@ -144,8 +145,9 @@ class RobotaxiCabinSimulator(System):
         self.C_CO2_init = C_CO2_init
 
         # Control inputs
-        self.u_hvac = 0.0       # Main HVAC modulation [0-1]
-        self.u_ptc = 0.0        # PTC heater modulation [0-1] (can be auto or manual)
+        self.u_hvac = 0.0       # Compressor RPM modulation [0-1]
+        self.u_ptc = 0.0        # PTC heater modulation [0-1]
+        self.u_blower = 0.5     # Blower fan speed [0.1-1.0]
         self.u_recirc = 0.5     # Recirculation [0-1]: 0=fresh, 1=recirc
 
         # Operating mode (determined automatically)
@@ -171,12 +173,13 @@ class RobotaxiCabinSimulator(System):
         self.C_CO2 = self.C_CO2_init
         self.u_hvac = 0.0
         self.u_ptc = 0.0
+        self.u_blower = 0.5
         self.u_recirc = 0.5
         self.mode = 'idle'
         self.scenario = scenario
         self.E_hp_total = 0.0
         self.E_ptc_total = 0.0
-        self._ptc_externally_controlled = False
+        self.E_blower_total = 0.0
 
         # Set HVAC mode based on scenario if not specified
         if hvac_mode is not None:
@@ -266,8 +269,8 @@ class RobotaxiCabinSimulator(System):
         # 4. Convective exchange between air and interior mass
         Q_conv_mass_to_air = self.h_conv * self.A_int * (self.T_mass - self.T_cabin)
 
-        # 5. Fresh air thermal load
-        m_dot_fresh = self.m_dot_blower * (1 - self.u_recirc)
+        # 5. Fresh air thermal load (scaled by blower)
+        m_dot_fresh = self.m_dot_blower_max * self.u_blower * (1 - self.u_recirc)
         Q_fresh = m_dot_fresh * self.c_p_air * (T_amb - self.T_cabin)
 
         # 6. Heat Pump (with PLR-dependent COP)
@@ -275,30 +278,34 @@ class RobotaxiCabinSimulator(System):
         COP_cool = self._cop_cooling(T_amb, self.T_cabin)
         COP_heat = self._cop_heating(T_amb)
 
-        Q_hp = 0.0
+        Q_hp_raw = 0.0
         P_hp_elec = 0.0
 
         if self.mode == 'cooling':
             # PLR correction: COP improves at partial load
             COP_cool_eff = COP_cool * (1 + self.alpha_plr * (1 - self.u_hvac))
-            Q_hp = -self.u_hvac * self.Q_hp_max_cool * eta_radiator
-            P_hp_elec = abs(Q_hp) / COP_cool_eff
+            Q_hp_raw = -self.u_hvac * self.Q_hp_max_cool * eta_radiator
+            P_hp_elec = abs(Q_hp_raw) / COP_cool_eff
 
         elif self.mode in ['heating', 'heating_ptc']:
             COP_heat_eff = COP_heat * (1 + self.alpha_plr * (1 - self.u_hvac))
-            Q_hp = self.u_hvac * self.Q_hp_max_heat * eta_radiator * COP_heat_eff
+            Q_hp_raw = self.u_hvac * self.Q_hp_max_heat * eta_radiator * COP_heat_eff
             P_hp_elec = self.u_hvac * self.Q_hp_max_heat * eta_radiator
 
         # 7. PTC Heater (independent control, only available when T_amb < threshold)
-        #    If no controller sets u_ptc explicitly, mirror u_hvac (PID compatibility)
-        Q_ptc = 0.0
+        #    If no controller sets u_ptc, mirror u_hvac (PID compatibility)
+        Q_ptc_raw = 0.0
         P_ptc_elec = 0.0
 
         if self.mode == 'heating_ptc':
-            if not getattr(self, '_ptc_externally_controlled', False):
+            if not hasattr(self, '_ptc_externally_controlled') or not self._ptc_externally_controlled:
                 self.u_ptc = self.u_hvac
-            Q_ptc = self.u_ptc * self.Q_ptc_max
-            P_ptc_elec = Q_ptc
+            Q_ptc_raw = self.u_ptc * self.Q_ptc_max
+            P_ptc_elec = Q_ptc_raw
+
+        # 8. Blower coupling: without blower, no heat reaches the cabin
+        Q_hp = self.u_blower * Q_hp_raw
+        Q_ptc = self.u_blower * Q_ptc_raw
 
         # Track energy consumption
         self.E_hp_total += P_hp_elec * self.step_size
@@ -355,6 +362,7 @@ class RobotaxiCabinSimulator(System):
             # Controls
             'hvac_modulation': self.u_hvac,
             'ptc_modulation': self.u_ptc,
+            'blower_modulation': self.u_blower,
             'recirc_modulation': self.u_recirc,
             # Disturbances
             'ambient_temperature': dist['T_ambient'],
@@ -369,7 +377,7 @@ class RobotaxiCabinSimulator(System):
             'ptc_power': getattr(self, '_last_P_ptc', 0),
             'hvac_mode': 1 if self.mode == 'cooling' else (-1 if 'heating' in self.mode else 0),
             'cop': getattr(self, '_last_COP', 1.0),
-            'fresh_air_flow': self.m_dot_blower * (1 - self.u_recirc),
+            'fresh_air_flow': self.m_dot_blower_max * self.u_blower * (1 - self.u_recirc),
         }
 
     def write(self, values: dict):
@@ -379,6 +387,8 @@ class RobotaxiCabinSimulator(System):
         if 'ptc_modulation' in values:
             self.u_ptc = np.clip(values['ptc_modulation'], 0.0, 1.0)
             self._ptc_externally_controlled = True
+        if 'blower_modulation' in values:
+            self.u_blower = np.clip(values['blower_modulation'], 0.1, 1.0)
         if 'recirc_modulation' in values:
             self.u_recirc = np.clip(values['recirc_modulation'], 0.0, 1.0)
 
@@ -514,7 +524,7 @@ class RobotaxiCabinSimulator(System):
         print(f"  PLR factor: {self.alpha_plr:.1f}")
         print(f"  Max PTC power: {self.Q_ptc_max:.0f} W")
         print(f"  PTC threshold: {self.T_ptc_threshold - 273.15:.0f}°C")
-        print(f"  Blower flow: {self.m_dot_blower:.3f} kg/s")
+        print(f"  Blower max flow: {self.m_dot_blower_max:.3f} kg/s")
         print(f"  Cabin volume: {self.V_cabin:.1f} m³")
         print(f"  Step size: {self.step_size} s")
         print(f"  Scenario: {self.scenario}")

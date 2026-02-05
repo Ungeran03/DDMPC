@@ -93,6 +93,57 @@ class FixedPID:
         self.last_error = 0.0
 
 
+class BlowerPI:
+    """
+    Blower fan speed controller with exponential smoothing.
+
+    Proportional response to abs(T_target - T_cabin) with a minimum
+    ventilation floor. Exponential smoothing prevents abrupt changes.
+
+    - Large error (transient): blower ramps to 1.0
+    - Small error (steady state): blower settles at min_vent
+    - Passenger disturbance: error rises → blower ramps up → more fresh air
+    """
+
+    def __init__(
+            self,
+            y,                      # Controlled feature (T_cabin)
+            u,                      # Control feature (u_blower)
+            step_size: int,
+            Kp: float = 1.0,       # Proportional gain on abs(error)
+            tau: float = 300.0,     # Smoothing time constant [s]
+            min_vent: float = 0.4,  # Minimum ventilation floor [-]
+    ):
+        self.y = y
+        self.u = u
+        self.step_size = step_size
+        self.Kp = Kp
+        self.tau = tau
+        self.min_vent = min_vent
+
+        self.output = u.default if hasattr(u, 'default') else 0.5
+
+    def __call__(self, df: pd.DataFrame) -> tuple[dict, dict]:
+        """Calculate blower control action."""
+
+        # Absolute temperature error — always positive
+        e = abs(self.y.error) if self.y.error is not None else 0.0
+
+        # Target: proportional + minimum ventilation floor
+        target = self.Kp * e + self.min_vent
+        target = np.clip(target, self.u.lb, self.u.ub)
+
+        # Exponential smoothing (first-order lag)
+        alpha = self.step_size / self.tau
+        self.output = alpha * target + (1 - alpha) * self.output
+        self.output = np.clip(self.output, self.u.lb, self.u.ub)
+
+        return {self.u.source.col_name: self.output}, {}
+
+    def reset(self):
+        self.output = self.u.default if hasattr(self.u, 'default') else 0.5
+
+
 class DualModePID:
     """
     PID that automatically handles both heating and cooling.

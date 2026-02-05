@@ -8,7 +8,7 @@ This script runs a PID controller to:
 """
 
 from configuration import *
-from controllers import FixedPID
+from controllers import FixedPID, BlowerPI
 
 # =============================================================================
 # SIMULATION CONFIGURATION
@@ -22,7 +22,7 @@ simulation_duration = simulation_hours * one_hour
 start_time = 6 * one_hour  # Start at 6:00 AM
 
 # Scenario: 'summer_city', 'winter_highway', 'mild_mixed'
-scenario = 'summer_city'
+scenario = 'winter_highway'
 
 # =============================================================================
 # PID CONTROLLER
@@ -36,7 +36,7 @@ if scenario in ('winter_highway', 'winter_city'):
         y=T_cabin,
         u=u_hvac,
         step_size=one_minute,
-        Kp=0.06,
+        Kp=0.04,
         Ti=100.0,
         Td=0.0,
         reverse_act=False,  # Heating: increase u when T < target
@@ -52,6 +52,16 @@ else:
         Td=0.0,
         reverse_act=True,   # Cooling: increase u when T > target
     )
+
+# Blower: proportional to abs(error) + minimum ventilation floor
+blower_pi = BlowerPI(
+    y=T_cabin,
+    u=u_blower,
+    step_size=one_minute,
+    Kp=1.0,
+    tau=300.0,
+    min_vent=0.5,
+)
 
 # =============================================================================
 # RUN SIMULATION
@@ -74,7 +84,7 @@ if __name__ == "__main__":
 
     data_container = system.run(
         duration=simulation_duration,
-        controllers=(pid_controller,),
+        controllers=(pid_controller, blower_pi),
     )
 
     # Get results
