@@ -404,6 +404,7 @@ def highway_anticipation_scenario() -> ScenarioConfig:
             'T_vent': 1.0,
             'T_ptc': 0.0,
             'C_CO2': 50.0,
+            'energy': 0.001,  # Higher energy penalty to encourage waiting for better eta
         },
 
         profile_T_ambient=ambient_profile,

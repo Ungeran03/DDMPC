@@ -1,24 +1,24 @@
 """
-Scenario 1: Pre-Conditioning Before Passenger Boarding
+Scenario 2: Highway Speed Anticipation
 
-Demonstrates MPC's ability to use passenger forecast for proactive climate control.
+Demonstrates MPC's ability to use velocity forecast for better radiator efficiency.
 
 Timeline:
-- t=0-5min:   Empty cabin, parked in sun (35°C)
-- t=5min:     3 passengers board (MPC knew this from t=0!)
-- t=5-25min:  3 passengers in cabin
-- t=25min:    Passengers alight
-- t=25-30min: Empty again
+- t=0-3min:   City driving, v=5 m/s, eta_radiator=0.65
+- t=3-5min:   Acceleration to highway
+- t=5-25min:  Highway cruising, v=25 m/s, eta_radiator=0.90
+- t=25-30min: Deceleration back to city
 
 Key insight:
-- MPC sees n_passengers in forecast → pre-cools and pre-ventilates BEFORE boarding
-- PID only reacts AFTER temperature/CO2 changes → overshoot and discomfort
+- MPC sees v_vehicle in forecast → can delay cooling until eta_radiator improves
+- PID ignores velocity → runs compressor immediately at lower efficiency
+- eta_radiator(v) = 0.5 + 0.5 * (1 - exp(-v/15))
 
 Metrics:
-- T_cabin at boarding (t=5min)
-- CO2 at boarding
-- Temperature overshoot after boarding
-- Energy consumption
+- Energy during city phase (t=0-3min)
+- Energy during highway phase (t=5-25min)
+- Total energy consumption
+- Temperature tracking quality
 """
 
 import sys
@@ -28,7 +28,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from configuration import *
-from scenario_config import preconditioning_scenario, ScenarioConfig, MVConfig
+from scenario_config import highway_anticipation_scenario, ScenarioConfig, MVConfig
 from s3_T_cabin_WB import (
     create_whitebox_T_ptc,
     create_whitebox_T_vent,
@@ -58,7 +58,7 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
 
     # Save metrics as JSON
     if save_path is None:
-        save_path = os.path.join(base_dir, f's1_{config.name}_results.json')
+        save_path = os.path.join(base_dir, f's2_{config.name}_results.json')
 
     results = {
         'scenario': config.name,
@@ -81,7 +81,7 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
     # Save raw data as CSV for paper plots
     if dataframes:
         for name, df in dataframes.items():
-            csv_path = os.path.join(base_dir, f's1_{config.name}_{name.lower()}.csv')
+            csv_path = os.path.join(base_dir, f's2_{config.name}_{name.lower()}.csv')
             # Select all relevant columns and convert units
             export_df = pd.DataFrame({
                 'time_min': np.arange(len(df)),
@@ -113,11 +113,7 @@ def build_mpc_from_config(config: ScenarioConfig):
     """
     Build MPC controller from scenario configuration.
 
-    Uses simple Quadratic costs for reliable IPOPT convergence:
-    - Temperature: Quadratic toward target (22°C)
-    - CO2: Quadratic toward target (600 ppm ambient level)
-    - Energy: Penalize u_hvac directly
-    - Smoothness: Control change penalties
+    Uses simple Quadratic costs for reliable IPOPT convergence.
     """
 
     # Create WhiteBox predictors
@@ -129,40 +125,31 @@ def build_mpc_from_config(config: ScenarioConfig):
     # Build objectives using simple Quadratic costs
     objectives = []
 
-    # --- Temperature: Quadratic toward target (22°C = 295.15 K) ---
+    # Temperature tracking
     if config.weights.get('T_cabin', 0) > 0:
         objectives.append(Objective(
             feature=T_cabin,
             cost=Quadratic(weight=config.weights['T_cabin'])
         ))
 
-    # T_vent: Intermediate state tracking
     if config.weights.get('T_vent', 0) > 0:
         objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=config.weights['T_vent'])))
 
-    # T_ptc: PTC element tracking
-    if config.weights.get('T_ptc', 0) > 0:
-        objectives.append(Objective(feature=T_ptc_elem, cost=Quadratic(weight=config.weights['T_ptc'])))
-
-    # --- CO2: Quadratic toward low target (600 ppm) ---
-    # Penalizes high CO2; hard constraint at 1200 ppm enforces the Pettenkofer limit
+    # CO2 tracking
     if config.weights.get('C_CO2', 0) > 0:
         objectives.append(Objective(
             feature=C_CO2,
-            cost=Quadratic(
-                weight=config.weights['C_CO2'],
-                norm=100.0,  # Scale: 100 ppm deviation = 1 unit
-            )
+            cost=Quadratic(weight=config.weights['C_CO2'], norm=100.0)
         ))
 
-    # --- Energy: Penalize u_hvac ---
+    # Energy penalty
     if config.weights.get('energy', 0) > 0:
         objectives.append(Objective(
             feature=u_hvac,
             cost=Quadratic(weight=config.weights['energy'] * config.Q_hp_max / config.COP_nominal)
         ))
 
-    # --- Smoothness: Control change penalties ---
+    # Smoothness: Control change penalties
     mv_cfg = config.mv_config
     if mv_cfg['u_hvac'].active:
         objectives.append(Objective(feature=u_hvac_change, cost=Quadratic(weight=mv_cfg['u_hvac'].weight_change)))
@@ -176,7 +163,7 @@ def build_mpc_from_config(config: ScenarioConfig):
     # Build constraints from config
     constraints = []
 
-    # Control bounds (box constraints - these MUST be respected)
+    # Control bounds
     if mv_cfg['u_hvac'].active:
         constraints.append(Constraint(feature=u_hvac, lb=mv_cfg['u_hvac'].lb, ub=mv_cfg['u_hvac'].ub))
     if mv_cfg.get('u_ptc', MVConfig(active=False)).active:
@@ -186,7 +173,7 @@ def build_mpc_from_config(config: ScenarioConfig):
     if mv_cfg['u_recirc'].active:
         constraints.append(Constraint(feature=u_recirc, lb=mv_cfg['u_recirc'].lb, ub=mv_cfg['u_recirc'].ub))
 
-    # CO2 hard constraint (Pettenkofer limit)
+    # CO2 hard constraint
     constraints.append(Constraint(feature=C_CO2, lb=0, ub=config.CO2_limit))
 
     # Create MPC controller
@@ -194,7 +181,7 @@ def build_mpc_from_config(config: ScenarioConfig):
         step_size=one_minute,
         nlp=NLP(
             model=model,
-            N=20,  # 20-minute horizon
+            N=20,
             control_change_step=1,
             objectives=objectives,
             constraints=constraints,
@@ -206,15 +193,15 @@ def build_mpc_from_config(config: ScenarioConfig):
         save_solution_data=False,
     )
 
-    # Solver options with higher iteration limit for reliable convergence
+    # Solver options
     solver_options = {
         "verbose": False,
         "ipopt.print_level": 0,
-        "ipopt.max_iter": 1000,  # Higher limit for difficult initial conditions
+        "ipopt.max_iter": 1000,
         "expand": True,
     }
 
-    # Select predictors based on active MVs
+    # Select predictors
     predictors = [wb_T_vent, wb_T_cabin, wb_CO2]
     if mv_cfg.get('u_ptc', MVConfig(active=False)).active:
         predictors.insert(0, wb_T_ptc)
@@ -253,117 +240,133 @@ def build_pid_from_config(config: ScenarioConfig):
     return pid, blower, ptc
 
 
-def compute_metrics(df: pd.DataFrame, config: ScenarioConfig, boarding_time_sec: int = 8 * 60) -> dict:
-    """Compute scenario-specific metrics."""
+def compute_eta_radiator(v: float) -> float:
+    """Compute radiator efficiency from velocity."""
+    return 0.5 + 0.5 * (1 - np.exp(-v / 15))
+
+
+def compute_metrics(df: pd.DataFrame, config: ScenarioConfig) -> dict:
+    """Compute scenario-specific metrics for highway anticipation."""
 
     metrics = {}
 
-    # Find boarding index
-    boarding_idx = int(boarding_time_sec / 60)  # Assuming 1-minute steps
+    # Phase boundaries (in minutes)
+    city_end = 3      # End of initial city phase
+    accel_end = 5     # End of acceleration phase
+    highway_end = 25  # End of highway phase
 
-    # T_cabin at boarding
-    if boarding_idx < len(df):
-        metrics['T_at_boarding_C'] = df['cabin_temperature'].iloc[boarding_idx] - 273.15
-    else:
-        metrics['T_at_boarding_C'] = np.nan
+    # Energy calculations (assuming 1-minute steps)
+    if 'hvac_power' in df.columns:
+        # Energy during city phase (t=0-3min)
+        city_mask = df.index < city_end
+        metrics['energy_city_Wh'] = df.loc[city_mask, 'hvac_power'].sum() * 60 / 3600
 
-    # CO2 at boarding
-    if 'co2_concentration' in df.columns and boarding_idx < len(df):
-        metrics['CO2_at_boarding'] = df['co2_concentration'].iloc[boarding_idx]
-    else:
-        metrics['CO2_at_boarding'] = np.nan
+        # Energy during acceleration (t=3-5min)
+        accel_mask = (df.index >= city_end) & (df.index < accel_end)
+        metrics['energy_accel_Wh'] = df.loc[accel_mask, 'hvac_power'].sum() * 60 / 3600
 
-    # Temperature overshoot after boarding (for cooling: undershoot below target)
-    T_target = 295.15  # 22°C
-    if boarding_idx < len(df):
-        T_after_boarding = df['cabin_temperature'].iloc[boarding_idx:]
-        if config.hvac_mode == 'cooling':
-            # Overshoot = how much above target after cooldown
-            metrics['T_overshoot_K'] = (T_after_boarding - T_target).max()
-        else:
-            # Undershoot = how much below target
-            metrics['T_overshoot_K'] = (T_target - T_after_boarding).max()
-    else:
-        metrics['T_overshoot_K'] = np.nan
+        # Energy during highway phase (t=5-25min)
+        highway_mask = (df.index >= accel_end) & (df.index < highway_end)
+        metrics['energy_highway_Wh'] = df.loc[highway_mask, 'hvac_power'].sum() * 60 / 3600
 
-    # Mean temperature
-    metrics['T_mean_C'] = df['cabin_temperature'].mean() - 273.15
+        # Total energy
+        metrics['energy_total_Wh'] = df['hvac_power'].sum() * 60 / 3600
 
-    # Max CO2
+    # Temperature metrics
+    T_target = 295.15  # 22C
+    T_cabin_C = df['cabin_temperature'] - 273.15
+
+    metrics['T_mean_C'] = T_cabin_C.mean()
+    metrics['T_max_C'] = T_cabin_C.max()
+    metrics['T_min_C'] = T_cabin_C.min()
+    metrics['T_at_highway_start_C'] = T_cabin_C.iloc[accel_end] if accel_end < len(df) else np.nan
+
+    # Temperature deviation from target
+    T_deviation = (df['cabin_temperature'] - T_target).abs()
+    metrics['T_mean_deviation_K'] = T_deviation.mean()
+    metrics['T_max_deviation_K'] = T_deviation.max()
+
+    # Mean eta_radiator (if velocity available)
+    if 'vehicle_speed' in df.columns:
+        v = df['vehicle_speed']
+        eta = 0.5 + 0.5 * (1 - np.exp(-v / 15))
+        metrics['eta_radiator_city'] = eta.iloc[:city_end].mean() if city_end <= len(df) else np.nan
+        metrics['eta_radiator_highway'] = eta.iloc[accel_end:highway_end].mean() if highway_end <= len(df) else np.nan
+
+    # CO2 metrics
     if 'co2_concentration' in df.columns:
         metrics['CO2_max'] = df['co2_concentration'].max()
         metrics['CO2_mean'] = df['co2_concentration'].mean()
-    else:
-        metrics['CO2_max'] = np.nan
-        metrics['CO2_mean'] = np.nan
-
-    # Total energy
-    metrics['energy_total_Wh'] = df['hvac_power'].sum() * 60 / 3600  # Assuming 1-min steps
-
-    # Energy before boarding (pre-conditioning)
-    if boarding_idx < len(df):
-        metrics['energy_preconditioning_Wh'] = df['hvac_power'].iloc[:boarding_idx].sum() * 60 / 3600
-    else:
-        metrics['energy_preconditioning_Wh'] = np.nan
 
     return metrics
 
 
 def plot_comparison(results: dict, config: ScenarioConfig, save_path: str = None):
-    """Plot MPC vs PID comparison for this scenario."""
+    """Plot MPC vs PID comparison for highway anticipation scenario."""
 
     fig, axes = plt.subplots(5, 1, figsize=(12, 14), sharex=True)
 
-    boarding_time = 8  # minutes
-    alighting_time = 25  # minutes
+    # Phase markers
+    city_end = 3
+    accel_end = 5
+    highway_end = 25
 
     colors = {'MPC': 'blue', 'PID': 'red'}
 
     for name, df in results.items():
-        t_min = np.arange(len(df))  # Time in minutes
+        t_min = np.arange(len(df))
         color = colors[name]
 
-        # Temperature (only T_cabin)
+        # Temperature
         axes[0].plot(t_min, df['cabin_temperature'] - 273.15, color=color, label=name)
 
-        # CO2
-        if 'co2_concentration' in df.columns:
-            axes[1].plot(t_min, df['co2_concentration'], color=color, label=name)
-
         # u_hvac
-        axes[2].plot(t_min, df['hvac_modulation'], color=color, label=name, drawstyle='steps-post')
+        axes[1].plot(t_min, df['hvac_modulation'], color=color, label=name, drawstyle='steps-post')
 
-        # u_blower
-        axes[3].plot(t_min, df['blower_modulation'], color=color, label=name, drawstyle='steps-post')
+        # Vehicle speed
+        if 'vehicle_speed' in df.columns:
+            axes[2].plot(t_min, df['vehicle_speed'], color=color, label=name)
 
-        # u_recirc (only MPC controls this)
-        if 'recirc_modulation' in df.columns:
-            axes[4].plot(t_min, df['recirc_modulation'], color=color, label=name, drawstyle='steps-post')
+        # eta_radiator (calculated from velocity)
+        if 'vehicle_speed' in df.columns:
+            eta = 0.5 + 0.5 * (1 - np.exp(-df['vehicle_speed'] / 15))
+            axes[3].plot(t_min, eta, color=color, label=name)
 
-    # Add target lines and boarding markers
+        # HVAC power
+        if 'hvac_power' in df.columns:
+            axes[4].plot(t_min, df['hvac_power'], color=color, label=name)
+
+    # Add target and phase markers
     axes[0].axhline(y=22, color='green', linestyle=':', label='Target')
-    axes[0].axvline(x=boarding_time, color='grey', linestyle='--', alpha=0.5, label='Boarding')
-    axes[0].axvline(x=alighting_time, color='grey', linestyle='--', alpha=0.5)
-    axes[0].set_ylabel('Temperature [°C]')
-    axes[0].legend(loc='upper right')
-    axes[0].set_title(f'Scenario 1: {config.description}')
+    for ax in axes:
+        ax.axvline(x=city_end, color='grey', linestyle='--', alpha=0.5)
+        ax.axvline(x=accel_end, color='grey', linestyle='--', alpha=0.5)
+        ax.axvline(x=highway_end, color='grey', linestyle='--', alpha=0.5)
 
-    axes[1].axhline(y=1200, color='red', linestyle=':', label='Limit')
-    axes[1].axvline(x=boarding_time, color='grey', linestyle='--', alpha=0.5)
-    axes[1].axvline(x=alighting_time, color='grey', linestyle='--', alpha=0.5)
-    axes[1].set_ylabel('CO2 [ppm]')
+    # Add phase labels
+    axes[0].text(1.5, axes[0].get_ylim()[1], 'City', ha='center', va='bottom', fontsize=9, color='grey')
+    axes[0].text(15, axes[0].get_ylim()[1], 'Highway', ha='center', va='bottom', fontsize=9, color='grey')
+
+    axes[0].set_ylabel('T_cabin [C]')
+    axes[0].legend(loc='upper right')
+    axes[0].set_title(f'Scenario 2: {config.description}')
+
+    axes[1].set_ylabel('u_hvac [-]')
+    axes[1].set_ylim(-0.05, 1.05)
     axes[1].legend(loc='upper right')
 
-    for ax in axes[2:5]:
-        ax.axvline(x=boarding_time, color='grey', linestyle='--', alpha=0.5)
-        ax.axvline(x=alighting_time, color='grey', linestyle='--', alpha=0.5)
-        ax.set_ylim(-0.05, 1.05)
-        ax.legend(loc='upper right')
+    axes[2].set_ylabel('v_vehicle [m/s]')
+    axes[2].legend(loc='upper right')
 
-    axes[2].set_ylabel('u_hvac [-]')
-    axes[3].set_ylabel('u_blower [-]')
-    axes[4].set_ylabel('u_recirc [-]')
+    axes[3].set_ylabel('eta_radiator [-]')
+    axes[3].set_ylim(0.4, 1.0)
+    axes[3].axhline(y=0.65, color='orange', linestyle=':', alpha=0.5, label='City (v=5)')
+    axes[3].axhline(y=0.90, color='green', linestyle=':', alpha=0.5, label='Highway (v=25)')
+    axes[3].legend(loc='lower right')
+
+    axes[4].set_ylabel('P_hvac [W]')
     axes[4].set_xlabel('Time [min]')
+    axes[4].legend(loc='upper right')
 
     plt.tight_layout()
 
@@ -375,14 +378,14 @@ def plot_comparison(results: dict, config: ScenarioConfig, save_path: str = None
 
 
 def run_scenario():
-    """Run Scenario 1: Pre-Conditioning Before Boarding."""
+    """Run Scenario 2: Highway Speed Anticipation."""
 
     print("=" * 70)
-    print("SCENARIO 1: Pre-Conditioning Before Passenger Boarding")
+    print("SCENARIO 2: Highway Speed Anticipation")
     print("=" * 70)
 
     # Load scenario configuration
-    config = preconditioning_scenario()
+    config = highway_anticipation_scenario()
     config.summary()
 
     # Calculate simulation parameters
@@ -409,7 +412,7 @@ def run_scenario():
 
         system.setup(
             start_time=start_time,
-            scenario='summer_city',  # Base scenario for defaults
+            scenario='summer_city',
             hvac_mode=config.hvac_mode,
             duration=duration_sec,
             profile_overrides=profile_overrides,
@@ -460,13 +463,16 @@ def run_scenario():
         metrics_all[name] = metrics
 
         print(f"\n{name}:")
-        print(f"  T at boarding (t=8min): {metrics['T_at_boarding_C']:.1f}°C (target: 22°C)")
-        print(f"  CO2 at boarding:        {metrics['CO2_at_boarding']:.0f} ppm")
-        print(f"  T overshoot:            {metrics['T_overshoot_K']:.2f} K")
-        print(f"  T mean:                 {metrics['T_mean_C']:.1f}°C")
-        print(f"  CO2 max:                {metrics['CO2_max']:.0f} ppm")
-        print(f"  Energy total:           {metrics['energy_total_Wh']:.0f} Wh")
-        print(f"  Energy pre-conditioning:{metrics['energy_preconditioning_Wh']:.0f} Wh")
+        print(f"  Energy (city phase t=0-3min):    {metrics['energy_city_Wh']:.1f} Wh")
+        print(f"  Energy (accel phase t=3-5min):   {metrics['energy_accel_Wh']:.1f} Wh")
+        print(f"  Energy (highway phase t=5-25min):{metrics['energy_highway_Wh']:.1f} Wh")
+        print(f"  Energy (total):                  {metrics['energy_total_Wh']:.1f} Wh")
+        print(f"  T at highway start (t=5min):     {metrics['T_at_highway_start_C']:.1f}C")
+        print(f"  T mean:                          {metrics['T_mean_C']:.1f}C")
+        print(f"  T max deviation:                 {metrics['T_max_deviation_K']:.2f} K")
+        if 'eta_radiator_city' in metrics:
+            print(f"  eta_radiator (city):             {metrics['eta_radiator_city']:.2f}")
+            print(f"  eta_radiator (highway):          {metrics['eta_radiator_highway']:.2f}")
 
     # --- Calculate Improvements ---
     if 'PID' in metrics_all and 'MPC' in metrics_all:
@@ -474,21 +480,22 @@ def run_scenario():
         print("MPC IMPROVEMENTS vs PID:")
         print("-" * 50)
 
-        T_diff = metrics_all['PID']['T_at_boarding_C'] - metrics_all['MPC']['T_at_boarding_C']
-        CO2_diff = metrics_all['PID']['CO2_at_boarding'] - metrics_all['MPC']['CO2_at_boarding']
-        energy_diff = (metrics_all['PID']['energy_total_Wh'] - metrics_all['MPC']['energy_total_Wh'])
-        energy_pct = energy_diff / metrics_all['PID']['energy_total_Wh'] * 100 if metrics_all['PID']['energy_total_Wh'] > 0 else 0
+        energy_city_diff = metrics_all['PID']['energy_city_Wh'] - metrics_all['MPC']['energy_city_Wh']
+        energy_total_diff = metrics_all['PID']['energy_total_Wh'] - metrics_all['MPC']['energy_total_Wh']
+        energy_pct = energy_total_diff / metrics_all['PID']['energy_total_Wh'] * 100 if metrics_all['PID']['energy_total_Wh'] > 0 else 0
 
-        print(f"  T at boarding:  {T_diff:+.1f}°C closer to target")
-        print(f"  CO2 at boarding: {CO2_diff:+.0f} ppm lower")
-        print(f"  Energy:          {energy_diff:+.0f} Wh ({energy_pct:+.1f}%)")
+        print(f"  Energy (city phase):   {energy_city_diff:+.1f} Wh saved")
+        print(f"  Energy (total):        {energy_total_diff:+.1f} Wh ({energy_pct:+.1f}%)")
+
+        T_dev_diff = metrics_all['PID']['T_max_deviation_K'] - metrics_all['MPC']['T_max_deviation_K']
+        print(f"  T max deviation:       {T_dev_diff:+.2f} K better")
 
     # --- Plot Results ---
     print("\n" + "-" * 50)
     print("Generating comparison plot...")
     print("-" * 50)
 
-    plot_path = os.path.join(os.path.dirname(__file__), '..', 's1_preconditioning_comparison.png')
+    plot_path = os.path.join(os.path.dirname(__file__), '..', 's2_highway_anticipation_comparison.png')
     plot_comparison(results, config, save_path=plot_path)
 
     # Save metrics and raw data for reproducibility / paper plots

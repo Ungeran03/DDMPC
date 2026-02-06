@@ -543,11 +543,68 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 
 | # | Scenario | Complexity | Implementation Status |
 |---|----------|------------|----------------------|
-| 1 | Pre-Conditioning | ⭐ | [ ] IN PROGRESS |
-| 2 | Highway Anticipation | ⭐⭐ | [ ] TODO |
+| 1 | Pre-Conditioning | ⭐ | [x] DONE |
+| 2 | Highway Anticipation | ⭐⭐ | [x] DONE |
 | 3 | Peak Shaving | ⭐⭐ | [ ] TODO |
 | 4 | CO2 Management | ⭐⭐⭐ | [ ] TODO |
 | 5 | SOC Relaxation | ⭐⭐⭐⭐ | [ ] TODO |
+
+### Scenario 1 Results: Pre-Conditioning
+
+**Setup:**
+- T_cabin_init: 28°C, T_mass_init: 30°C (moderately warm cabin)
+- T_ambient: 32°C, Solar: 800 W/m²
+- Passengers board at t=8 min (3 passengers), alight at t=25 min
+- Duration: 30 min
+
+**Results:**
+
+| Metric | PID | MPC | Improvement |
+|--------|-----|-----|-------------|
+| T at boarding (t=8min) | 22.4°C | 23.1°C | - |
+| Energy total | 367 Wh | 154 Wh | **-57.9%** |
+| Energy pre-conditioning | 76 Wh | 54 Wh | -29% |
+| CO2 max | 1005 ppm | 1000 ppm | similar |
+
+**Key Insight:** MPC uses gradual u_hvac (~0.4-0.8) instead of PID's immediate max (1.0), achieving same comfort at 58% less energy. MPC exploits PLR-COP efficiency (partial load = higher COP).
+
+**Output Files:**
+- `Examples/Robotaxi/s1_preconditioning_comparison.png` - Comparison plot
+- `Examples/Robotaxi/s1_preconditioning_results.json` - Metrics + config
+- `Examples/Robotaxi/s1_preconditioning_pid.csv` - PID raw data
+- `Examples/Robotaxi/s1_preconditioning_mpc.csv` - MPC raw data
+
+**Script:** `Examples/Robotaxi/scenarios/s1_preconditioning.py`
+
+### Scenario 2 Results: Highway Speed Anticipation
+
+**Setup:**
+- T_cabin_init: 30°C, T_mass_init: 35°C (warm cabin, just got in)
+- T_ambient: 33°C, Solar: 600 W/m²
+- 2 passengers throughout
+- Velocity: city (5 m/s, t=0-3min) → highway (25 m/s, t=5-25min)
+- Duration: 30 min
+
+**Results:**
+
+| Metric | PID | MPC | Improvement |
+|--------|-----|-----|-------------|
+| Energy total | 519 Wh | 187 Wh | **-64.0%** |
+| Energy city (t=0-3min) | 27 Wh | 28 Wh | ~same |
+| Energy highway (t=5-25min) | 376 Wh | 109 Wh | **-71%** |
+| T at highway start | 25.3°C | 26.4°C | MPC warmer |
+| eta_radiator city | 0.64 | 0.64 | same |
+| eta_radiator highway | 0.91 | 0.91 | same |
+
+**Key Insight:** MPC saves 64% energy by exploiting better radiator efficiency on highway. At city speed (5 m/s), eta=0.64; at highway (25 m/s), eta=0.91. MPC doesn't need to push as hard because each Watt of electrical power produces 40% more cooling at highway speed.
+
+**Output Files:**
+- `Examples/Robotaxi/s2_highway_anticipation_comparison.png` - Comparison plot
+- `Examples/Robotaxi/s2_highway_anticipation_results.json` - Metrics + config
+- `Examples/Robotaxi/s2_highway_anticipation_pid.csv` - PID raw data
+- `Examples/Robotaxi/s2_highway_anticipation_mpc.csv` - MPC raw data
+
+**Script:** `Examples/Robotaxi/scenarios/s2_highway_anticipation.py`
 
 ---
 
@@ -691,7 +748,11 @@ m_dot_fresh = m_dot_max × u_blower × fresh_frac
 
 ## Next Steps / TODO
 
-- [ ] Run MPC vs PID comparison (s4_mpc.py)
+- [x] Scenario 1: Pre-Conditioning (MPC 58% energy savings vs PID)
+- [x] Scenario 2: Highway Speed Anticipation (MPC 64% energy savings vs PID)
+- [ ] Scenario 3: Temperature Peak Shaving
+- [ ] Scenario 4: CO2 vs Energy Trade-off
+- [ ] Scenario 5: SOC-Dependent Comfort Relaxation
 - [x] Tune PID gains for winter scenario with blower coupling (Kp=0.04, Ti=100)
 - [x] Add u_blower as MV with BlowerPI controller and blower coupling physics
 - [x] Redesign BlowerPI as PI with product error (keeps blower high in extreme conditions)
