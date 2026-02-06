@@ -727,9 +727,9 @@ class NLP:
                 lb, ub = opt_var.feature.mode.bounds(0)
                 target = opt_var.feature.mode.target(0)
 
-                if target is not np.NAN:
+                if target is not None and not np.isnan(target):
                     cold_start_values.append(target)
-                elif lb is not np.NAN and ub is not np.NAN:
+                elif lb is not None and ub is not None and not np.isnan(lb) and not np.isnan(ub):
                     cold_start_values.append((lb + ub) / 2)
                 else:
                     cold_start_values.append(0)

@@ -2,7 +2,8 @@
 Step 4: Model Predictive Control for Robotaxi Cabin Climate
 
 Enhanced MPC with:
-- Two-node thermal model (air + interior mass)
+- Four-node thermal model: T_ptc -> T_vent -> T_cabin -> (T_mass hidden)
+- T_mass is hidden from MPC (unmeasurable in real vehicle)
 - Fresh air / recirculation control
 - CO2 air quality tracking
 - PLR-dependent COP
@@ -11,8 +12,13 @@ Comparison: MPC vs PID baseline
 """
 
 from configuration import *
-from s3_T_cabin_WB import create_whitebox_T_cabin, create_whitebox_T_mass, create_whitebox_CO2
-from controllers import FixedPID, BlowerPI
+from s3_T_cabin_WB import (
+    create_whitebox_T_ptc,
+    create_whitebox_T_vent,
+    create_whitebox_T_cabin,
+    create_whitebox_CO2,
+)
+from controllers import FixedPID, BlowerPI, PTCRelay
 from ddmpc.controller.model_predictive.nlp import NLP, Objective, Constraint
 from ddmpc.controller.model_predictive.costs import Quadratic, AbsoluteLinear
 
@@ -26,11 +32,16 @@ start_time = 6 * one_hour  # Start at 6:00 AM
 scenario = 'summer_city'
 
 # =============================================================================
-# CREATE WHITEBOX PREDICTORS
+# CREATE WHITEBOX PREDICTORS (4-node model)
 # =============================================================================
 
-wb_T_cabin = create_whitebox_T_cabin(hvac_mode='cooling')
-wb_T_mass = create_whitebox_T_mass()
+# Determine hvac_mode based on scenario
+hvac_mode = 'heating' if scenario in ('winter_highway', 'winter_city') else 'cooling'
+
+# Create all four predictors
+wb_T_ptc = create_whitebox_T_ptc()
+wb_T_vent = create_whitebox_T_vent(hvac_mode=hvac_mode)
+wb_T_cabin = create_whitebox_T_cabin()
 wb_CO2 = create_whitebox_CO2()
 
 # =============================================================================
@@ -53,8 +64,10 @@ mpc_controller = ModelPredictive(
         objectives=[
             # Comfort: penalize T_cabin bound violations
             Objective(feature=T_cabin, cost=Quadratic(weight=100.0)),
-            # Mass: low weight (physics coupling only)
-            Objective(feature=T_mass, cost=Quadratic(weight=1.0)),
+            # T_vent: intermediate state (MPC uses for heat transfer prediction)
+            Objective(feature=T_vent, cost=Quadratic(weight=1.0)),
+            # T_ptc: PTC element (low weight, just for state tracking)
+            Objective(feature=T_ptc_elem, cost=Quadratic(weight=0.1)),
             # CO2: penalize bound violations
             Objective(feature=C_CO2, cost=Quadratic(weight=50.0)),
             # Control smoothness
@@ -96,10 +109,16 @@ else:
         Kp=0.3, Ti=100.0, Td=0.0, reverse_act=True,
     )
 
-# Blower for PID baseline
+# Blower for PID baseline: PI with product error
 blower_pi = BlowerPI(
-    y=T_cabin, u=u_blower, step_size=one_minute,
-    Kp=1.0, tau=300.0, min_vent=0.5,
+    y=T_cabin, u=u_blower, T_amb_feature=T_ambient, step_size=one_minute,
+    Kp=0.5, Ti=150.0, deadband=0.3,
+)
+
+# PTC relay for PID baseline (MPC controls u_ptc continuously)
+ptc_relay = PTCRelay(
+    y=T_cabin, u=u_ptc, T_amb_feature=T_ambient,
+    step_size=one_minute,
 )
 
 # =============================================================================
@@ -136,7 +155,7 @@ if __name__ == "__main__":
 
     dc_pid = system.run(
         duration=simulation_duration,
-        controllers=(pid_controller, blower_pi),
+        controllers=(pid_controller, blower_pi, ptc_relay),
     )
     results['PID'] = dc_pid.df.copy()
 
@@ -148,10 +167,10 @@ if __name__ == "__main__":
     system.close()
     system.setup(start_time=start_time, scenario=scenario)
 
-    # Build NLP with all three predictors
+    # Build NLP with all four predictors (4-node model)
     mpc_controller.nlp.build(
         solver_options=solver_options,
-        predictors=[wb_T_cabin, wb_T_mass, wb_CO2],
+        predictors=[wb_T_ptc, wb_T_vent, wb_T_cabin, wb_CO2],
     )
     mpc_controller.nlp.summary()
 
@@ -203,4 +222,4 @@ if __name__ == "__main__":
     # =============================================================================
 
     print("\nPlotting MPC results...")
-    mpc_plotter.plot(results['MPC'])
+    mpc_result_plotter.plot(results['MPC'])

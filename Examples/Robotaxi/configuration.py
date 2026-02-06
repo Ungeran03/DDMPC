@@ -253,6 +253,13 @@ Q_passengers = Connection(Func(base=n_passengers, func=passenger_heat_load, name
 
 # Effective solar gain considering vehicle orientation
 # Simplified: assumes sun position and calculates effective window area
+# Note: Using CasADi functions to support both numeric and symbolic evaluation
+import casadi as ca
+
+def _is_casadi(x):
+    """Check if x is a CasADi symbolic type."""
+    return hasattr(x, 'is_symbolic') or isinstance(x, (ca.MX, ca.SX, ca.DM))
+
 def solar_gain_factor(heading_rad):
     """
     Simplified solar gain factor based on heading.
@@ -260,7 +267,10 @@ def solar_gain_factor(heading_rad):
     Returns factor [0-1] for how much solar radiation enters the cabin.
     """
     # Simplified model: maximum when sun is perpendicular to side windows
-    return 0.3 + 0.2 * np.abs(np.sin(heading_rad))
+    if _is_casadi(heading_rad):
+        return 0.3 + 0.2 * ca.fabs(ca.sin(heading_rad))
+    else:
+        return 0.3 + 0.2 * np.abs(np.sin(heading_rad))
 
 solar_factor = Connection(Func(base=heading, func=solar_gain_factor, name="solar_factor"))
 
@@ -272,7 +282,10 @@ def radiator_efficiency(v):
     Efficiency saturates at higher speeds.
     """
     v_ref = 30.0  # Reference velocity [m/s] where efficiency is ~1
-    return 0.6 + 0.4 * (1 - np.exp(-v / v_ref))
+    if _is_casadi(v):
+        return 0.6 + 0.4 * (1 - ca.exp(-v / v_ref))
+    else:
+        return 0.6 + 0.4 * (1 - np.exp(-v / v_ref))
 
 eta_radiator = Connection(Func(base=v_vehicle, func=radiator_efficiency, name="eta_radiator"))
 
@@ -283,18 +296,78 @@ def soc_cost_factor(soc_val):
     Cost multiplier based on SOC.
     Low SOC -> high cost factor to preserve range.
     """
-    if soc_val > 0.5:
-        return 1.0
-    elif soc_val > 0.2:
-        return 1.0 + 2.0 * (0.5 - soc_val)  # Linear increase
+    if _is_casadi(soc_val):
+        # CasADi symbolic: use if_else
+        cost_low = 3.0 + 5.0 * (0.2 - soc_val)         # Below 20%
+        cost_mid = 1.0 + 2.0 * (0.5 - soc_val)         # 20-50%
+        cost_high = 1.0                                 # Above 50%
+        return ca.if_else(soc_val > 0.5, cost_high,
+               ca.if_else(soc_val > 0.2, cost_mid, cost_low))
     else:
-        return 3.0 + 5.0 * (0.2 - soc_val)  # Steep increase below 20%
+        # Numeric: use Python conditionals
+        if soc_val > 0.5:
+            return 1.0
+        elif soc_val > 0.2:
+            return 1.0 + 2.0 * (0.5 - soc_val)
+        else:
+            return 3.0 + 5.0 * (0.2 - soc_val)
 
 cost_factor_soc = Connection(Func(base=soc, func=soc_cost_factor, name="cost_factor_soc"))
 
 # =============================================================================
+# MPC STATE VARIABLES (HVAC node temperatures)
+# =============================================================================
+
+# Steady mode for HVAC duct temperature (intermediate state)
+T_vent_steady = Steady(
+    day_start=6,
+    day_end=22,
+    day_target=295.15,      # Target same as cabin for simplicity
+    night_target=293.15,
+)
+
+# HVAC duct temperature [K] - air temperature leaving HVAC before entering cabin
+T_vent = Controlled(
+    source=Readable(
+        name="T_vent",
+        read_name="vent_temperature",
+        plt_opts=PlotOptions(color=light_red, line=line_solid, label="T_vent"),
+    ),
+    mode=T_vent_steady,
+)
+T_vent_change = Connection(Change(base=T_vent))
+
+# Steady mode for PTC element temperature
+T_ptc_steady = Steady(
+    day_start=6,
+    day_end=22,
+    day_target=295.15,      # Target same as cabin (actual controlled by relay)
+    night_target=293.15,
+)
+
+# PTC element temperature [K] - for relay control and diagnostics
+T_ptc_elem = Controlled(
+    source=Readable(
+        name="T_ptc_elem",
+        read_name="ptc_temperature",
+        plt_opts=PlotOptions(color=dark_red, line=line_dotted, label="T_ptc"),
+    ),
+    mode=T_ptc_steady,
+)
+T_ptc_elem_change = Connection(Change(base=T_ptc_elem))
+
+# =============================================================================
 # TRACKING VARIABLES (Monitoring only)
 # =============================================================================
+
+# Inlet temperature [K] - mixed air entering HVAC duct (calculated, not predicted)
+T_inlet = Tracking(
+    Readable(
+        name="T_inlet",
+        read_name="inlet_temperature",
+        plt_opts=PlotOptions(color=light_blue, line=line_dotted, label="T_inlet"),
+    )
+)
 
 # Battery power for HVAC [W]
 P_battery = Tracking(
@@ -355,29 +428,34 @@ system = RobotaxiCabinSimulator(
     model=model,
     step_size=one_minute,           # 1 minute control steps
     time_offset=time_offset,
-    # Air node parameters
+    # Cabin air node parameters
     C_cabin=50000.0,                # Air thermal capacity [J/K]
     # Transmission parameters (separate paths)
     UA_opaque=15.0,                 # Opaque envelope [W/K] (roof+walls+floor)
     UA_window=12.5,                 # Windows [W/K]
     A_window=2.5,                   # Window area [m²]
     tau_window=0.6,                 # Window transmittance [-]
-    # Interior mass parameters
+    # Interior mass parameters (not measurable, only in simulator)
     C_mass=120000.0,                # Interior mass [J/K] (dashboard, seats, trim)
     h_conv=10.0,                    # Convective HTC interior [W/(m²K)]
     A_int=8.0,                      # Interior surface area [m²]
     f_solar_air=0.3,                # Solar fraction to air
     f_solar_mass=0.7,               # Solar fraction to mass
+    # HVAC duct parameters (T_vent node)
+    C_hvac=5000.0,                  # HVAC duct thermal capacity [J/K]
     # Heat Pump parameters
     Q_hp_max_cool=5000.0,           # Max HP cooling power [W]
     Q_hp_max_heat=4000.0,           # Max HP heating power [W]
     alpha_plr=0.3,                  # COP partial load factor [-]
-    # PTC Heater parameters
-    Q_ptc_max=6000.0,               # Max PTC power [W]
+    # PTC Heater parameters (T_ptc node)
+    Q_ptc_max=6000.0,               # Max PTC electrical power [W]
+    C_ptc=1500.0,                   # PTC element thermal capacity [J/K]
+    h_ptc=200.0,                    # PTC-to-vent heat transfer coeff [W/K]
     T_ptc_threshold=268.15,         # PTC activation below -5°C
     # Fresh air / recirculation
-    m_dot_blower_max=0.08,           # Max blower mass flow [kg/s]
+    m_dot_blower_max=0.08,          # Max blower mass flow [kg/s]
     c_p_air=1005.0,                 # Specific heat of air [J/(kg*K)]
+    min_fresh_frac=0.1,             # Min fresh air even at full recirc [-]
     # CO2 parameters
     V_cabin=3.0,                    # Cabin volume [m³]
     R_CO2=5e-6,                     # CO2 per person [m³/s]
@@ -386,6 +464,8 @@ system = RobotaxiCabinSimulator(
     # Initial conditions
     T_cabin_init=293.15,            # Initial air temp 20°C
     T_mass_init=293.15,             # Initial mass temp 20°C
+    T_vent_init=293.15,             # Initial duct air temp 20°C
+    T_ptc_init=293.15,              # Initial PTC element temp 20°C
     T_target=295.15,                # Target 22°C
     C_CO2_init=420.0,               # Initial CO2 [ppm]
 )
@@ -396,7 +476,7 @@ system = RobotaxiCabinSimulator(
 
 # Plotter for PID baseline controller
 pid_plotter = Plotter(
-    SubPlot(features=[T_cabin, T_mass], y_label="Temperatures [°C]", shift=273.15),
+    SubPlot(features=[T_cabin, T_vent, T_mass], y_label="Temperatures [°C]", shift=273.15),
     SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
     SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
     SubPlot(features=[u_hvac, u_blower], y_label="Controls [-]", step=True),
@@ -404,15 +484,23 @@ pid_plotter = Plotter(
     SubPlot(features=[n_passengers], y_label="Passengers [-]"),
 )
 
-# Plotter for MPC controller
+# Plotter for MPC controller (solution plots - no P_hp/P_ptc as they're not predicted)
 mpc_plotter = Plotter(
-    SubPlot(features=[T_cabin, T_mass], y_label="Temperatures [°C]", shift=273.15),
+    SubPlot(features=[T_cabin, T_vent, T_ptc_elem], y_label="Temperatures [°C]", shift=273.15),
     SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
-    SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
     SubPlot(features=[u_hvac, u_ptc, u_blower, u_recirc], y_label="Controls [-]", step=True),
     SubPlot(features=[T_ambient], y_label="Ambient Temp [°C]", shift=273.15),
     SubPlot(features=[solar_radiation], y_label="Solar [W/m²]"),
     SubPlot(features=[n_passengers], y_label="Passengers [-]"),
     SubPlot(features=[v_vehicle], y_label="Velocity [m/s]"),
-    SubPlot(features=[soc], y_label="SOC [-]"),
+)
+
+# Plotter for final MPC results (uses simulation output including power)
+mpc_result_plotter = Plotter(
+    SubPlot(features=[T_cabin, T_vent, T_mass], y_label="Temperatures [°C]", shift=273.15),
+    SubPlot(features=[C_CO2], y_label="CO2 [ppm]"),
+    SubPlot(features=[P_hp, P_ptc], y_label="Power [W]"),
+    SubPlot(features=[u_hvac, u_ptc, u_blower, u_recirc], y_label="Controls [-]", step=True),
+    SubPlot(features=[T_ambient], y_label="Ambient Temp [°C]", shift=273.15),
+    SubPlot(features=[n_passengers], y_label="Passengers [-]"),
 )

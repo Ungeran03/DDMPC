@@ -1,0 +1,40 @@
+{
+  "scenario": "preconditioning",
+  "description": "Pre-Conditioning Before Passenger Boarding",
+  "timestamp": "2026-02-06T14:27:16.397976",
+  "config": {
+    "duration_hours": 0.5,
+    "hvac_mode": "cooling",
+    "T_cabin_init_C": 28.0,
+    "T_mass_init_C": 30.0,
+    "weights": {
+      "T_cabin": 500.0,
+      "T_vent": 1.0,
+      "T_ptc": 0.0,
+      "C_CO2": 30.0,
+      "energy": 0.0001
+    }
+  },
+  "metrics": {
+    "PID": {
+      "T_at_boarding_C": 22.44918336790778,
+      "CO2_at_boarding": 420.0,
+      "T_overshoot_K": 0.7119730841058072,
+      "T_mean_C": 22.884202180012096,
+      "CO2_max": 1005.1729597354147,
+      "CO2_mean": 739.5576871243925,
+      "energy_total_Wh": 366.7133678233004,
+      "energy_preconditioning_Wh": 75.86946551485636
+    },
+    "MPC": {
+      "T_at_boarding_C": 23.139747597862026,
+      "CO2_at_boarding": 420.0,
+      "T_overshoot_K": 1.204496171362564,
+      "T_mean_C": 23.75775372980047,
+      "CO2_max": 1000.076677056522,
+      "CO2_mean": 748.3810835997789,
+      "energy_total_Wh": 154.39164753584137,
+      "energy_preconditioning_Wh": 54.22683672994683
+    }
+  }
+}

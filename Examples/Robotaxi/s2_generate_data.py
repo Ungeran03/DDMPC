@@ -8,7 +8,7 @@ This script runs a PID controller to:
 """
 
 from configuration import *
-from controllers import FixedPID, BlowerPI
+from controllers import FixedPID, BlowerPI, PTCRelay
 
 # =============================================================================
 # SIMULATION CONFIGURATION
@@ -53,14 +53,23 @@ else:
         reverse_act=True,   # Cooling: increase u when T > target
     )
 
-# Blower: proportional to abs(error) + minimum ventilation floor
+# Blower: PI with product error (scales with environmental extremity)
 blower_pi = BlowerPI(
     y=T_cabin,
     u=u_blower,
+    T_amb_feature=T_ambient,
     step_size=one_minute,
-    Kp=1.0,
-    tau=300.0,
-    min_vent=0.5,
+    Kp=0.5,
+    Ti=150.0,
+    deadband=0.3,
+)
+
+# PTC: relay controller with hysteresis (only active in winter)
+ptc_relay = PTCRelay(
+    y=T_cabin,
+    u=u_ptc,
+    T_amb_feature=T_ambient,
+    step_size=one_minute,
 )
 
 # =============================================================================
@@ -84,7 +93,7 @@ if __name__ == "__main__":
 
     data_container = system.run(
         duration=simulation_duration,
-        controllers=(pid_controller, blower_pi),
+        controllers=(pid_controller, blower_pi, ptc_relay),
     )
 
     # Get results
