@@ -644,12 +644,12 @@ def soc_relaxation_scenario() -> ScenarioConfig:
         return initial_soc - progress * (initial_soc - final_soc)
 
     def passenger_profile(t_sec: float) -> int:
-        """2 passengers throughout."""
-        return 2
+        """3 passengers (moderate heat load)."""
+        return 3
 
     def velocity_profile(t_sec: float) -> float:
-        """City driving ~30 km/h."""
-        return 8.0
+        """Moderate city traffic."""
+        return 8.0  # ~29 km/h, eta_radiator ≈ 0.71
 
     def ambient_profile(t_sec: float) -> float:
         """Hot summer day: 32°C."""
@@ -667,12 +667,12 @@ def soc_relaxation_scenario() -> ScenarioConfig:
         start_time_hours=14.0,  # Afternoon
         hvac_mode='cooling',
 
-        # Start at target temperature (steady state)
-        T_cabin_init=273.15 + 22.0,
-        T_mass_init=273.15 + 24.0,
+        # Start at target - MPC must MAINTAIN against high heat load
+        T_cabin_init=273.15 + 22.0,  # 22°C - at target
+        T_mass_init=273.15 + 24.0,   # 24°C - slightly warm
         T_vent_init=273.15 + 22.0,
         T_ptc_init=273.15 + 22.0,
-        C_CO2_init=500.0,
+        C_CO2_init=600.0,  # Some CO2 from passengers
 
         mv_config={
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
@@ -682,17 +682,19 @@ def soc_relaxation_scenario() -> ScenarioConfig:
         },
 
         # Base weights - T_cabin weight gets scaled by SOC in MPC
+        # High comfort weight forces tight control initially
+        # When SOC drops, MPC switches to low weight and relaxes
         weights={
-            'T_cabin': 500.0,  # Base weight, scaled by w_comfort(soc)
+            'T_cabin': 5000.0,  # High weight: strict temperature control
             'T_vent': 1.0,
             'T_ptc': 0.0,
             'C_CO2': 30.0,
-            'energy': 0.001,  # Moderate energy penalty
+            'energy': 0.0001,  # Low energy penalty (comfort dominates initially)
         },
 
         # SOC threshold for comfort relaxation
         soc_threshold=0.1,  # 10%
-        soc_low_weight_factor=0.2,  # w_comfort = 0.2 * w_base when soc < threshold
+        soc_low_weight_factor=0.02,  # w_comfort = 2% of w_base when soc < threshold (5000 -> 100)
 
         profile_T_ambient=ambient_profile,
         profile_solar=solar_profile,

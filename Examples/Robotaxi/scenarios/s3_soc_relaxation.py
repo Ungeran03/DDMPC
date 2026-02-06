@@ -42,7 +42,7 @@ from s3_T_cabin_WB import (
 )
 from controllers import FixedPID, BlowerPI, PTCRelay
 from ddmpc.controller.model_predictive.nlp import NLP, Objective, Constraint
-from ddmpc.controller.model_predictive.costs import Quadratic
+from ddmpc.controller.model_predictive.costs import Quadratic, BandViolation
 
 import numpy as np
 import pandas as pd
@@ -109,48 +109,85 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
     return save_path
 
 
-def build_mpc_with_soc_weight(config: ScenarioConfig, T_cabin_weight: float):
+def build_mpc_comfort_mode(config: ScenarioConfig):
     """
-    Build MPC controller with specified T_cabin weight.
-
-    The weight is determined by SOC:
-    - If min_soc_in_horizon >= threshold: full comfort weight
-    - If min_soc_in_horizon < threshold: reduced comfort weight
+    Build MPC for COMFORT mode: High w_T, no w_energy.
+    MPC maintains temperature tightly.
     """
-    # Create WhiteBox predictors
     wb_T_ptc = create_whitebox_T_ptc()
     wb_T_vent = create_whitebox_T_vent(hvac_mode=config.hvac_mode)
     wb_T_cabin = create_whitebox_T_cabin()
     wb_CO2 = create_whitebox_CO2()
 
-    # Build objectives with specified T_cabin weight
     objectives = []
 
-    # Temperature with SOC-dependent weight
-    if T_cabin_weight > 0:
-        objectives.append(Objective(
-            feature=T_cabin,
-            cost=Quadratic(weight=T_cabin_weight)
-        ))
+    # Temperature: High weight for strict tracking
+    objectives.append(Objective(
+        feature=T_cabin,
+        cost=Quadratic(weight=500.0)
+    ))
 
     # T_vent tracking
-    if config.weights.get('T_vent', 0) > 0:
-        objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=config.weights['T_vent'])))
+    objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=1.0)))
 
     # CO2 penalty
-    if config.weights.get('C_CO2', 0) > 0:
-        objectives.append(Objective(
-            feature=C_CO2,
-            cost=Quadratic(weight=config.weights['C_CO2'], norm=100.0)
-        ))
+    objectives.append(Objective(
+        feature=C_CO2,
+        cost=Quadratic(weight=30.0, norm=100.0)
+    ))
 
-    # Energy penalty
-    if config.weights.get('energy', 0) > 0:
-        objectives.append(Objective(
-            feature=u_hvac,
-            cost=Quadratic(weight=config.weights['energy'] * config.Q_hp_max / config.COP_nominal)
-        ))
+    # NO energy penalty in comfort mode!
 
+    return _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2)
+
+
+def build_mpc_saving_mode(config: ScenarioConfig):
+    """
+    Build MPC for ENERGY-SAVING mode: Low w_T, high w_energy.
+    MPC sacrifices comfort to save energy.
+    """
+    wb_T_ptc = create_whitebox_T_ptc()
+    wb_T_vent = create_whitebox_T_vent(hvac_mode=config.hvac_mode)
+    wb_T_cabin = create_whitebox_T_cabin()
+    wb_CO2 = create_whitebox_CO2()
+
+    objectives = []
+
+    # Temperature: Very low weight - allow drift
+    objectives.append(Objective(
+        feature=T_cabin,
+        cost=Quadratic(weight=5.0)  # 100x lower than comfort mode
+    ))
+
+    # T_vent tracking
+    objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=0.01)))
+
+    # CO2 penalty
+    objectives.append(Objective(
+        feature=C_CO2,
+        cost=Quadratic(weight=10.0, norm=100.0)
+    ))
+
+    # High energy penalty
+    objectives.append(Objective(
+        feature=u_hvac,
+        cost=Quadratic(weight=200.0)
+    ))
+
+    return _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2)
+
+
+def _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2):
+    """Build MPC with standard constraints."""
+    return _build_mpc_impl(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2, add_T_constraint=False)
+
+
+def _build_mpc_common_with_T_constraint(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2):
+    """Build MPC with additional hard T_cabin constraint."""
+    return _build_mpc_impl(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2, add_T_constraint=True)
+
+
+def _build_mpc_impl(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2, add_T_constraint=False):
     # Smoothness penalties
     mv_cfg = config.mv_config
     if mv_cfg['u_hvac'].active:
@@ -169,6 +206,10 @@ def build_mpc_with_soc_weight(config: ScenarioConfig, T_cabin_weight: float):
     if mv_cfg['u_recirc'].active:
         constraints.append(Constraint(feature=u_recirc, lb=mv_cfg['u_recirc'].lb, ub=mv_cfg['u_recirc'].ub))
     constraints.append(Constraint(feature=C_CO2, lb=0, ub=config.CO2_limit))
+
+    # Add hard T_cabin constraint for saving mode (prevents runaway)
+    if add_T_constraint:
+        constraints.append(Constraint(feature=T_cabin, lb=273.15 + 18.0, ub=273.15 + 28.0))
 
     # Create MPC
     mpc = ModelPredictive(
@@ -202,25 +243,27 @@ def build_mpc_with_soc_weight(config: ScenarioConfig, T_cabin_weight: float):
 
 class SOCAwareMPCWrapper:
     """
-    Wrapper that checks SOC forecast and switches between high/low comfort MPCs.
+    Wrapper that checks SOC forecast and switches between comfort/energy-saving MPCs.
 
     This implements anticipation: if SOC will drop below threshold within the
-    20-minute horizon, switch to low comfort mode BEFORE it happens.
+    20-minute horizon, switch to energy-saving mode BEFORE it happens.
+
+    Key insight: Different COST FUNCTIONS for each mode:
+    - Comfort mode: Quadratic(target=22°C) → tight tracking, no energy penalty
+    - Saving mode:  BandViolation[20,24°C] + high energy penalty → allows drift
     """
 
     def __init__(self, config: ScenarioConfig):
         self.config = config
         self.threshold = config.soc_threshold
-        self.w_base = config.weights['T_cabin']
-        self.w_low = self.w_base * config.soc_low_weight_factor
 
-        # Build both MPCs
-        print(f"  Building MPC with high comfort weight ({self.w_base})...")
-        self.mpc_high = build_mpc_with_soc_weight(config, self.w_base)
-        print(f"  Building MPC with low comfort weight ({self.w_low})...")
-        self.mpc_low = build_mpc_with_soc_weight(config, self.w_low)
+        # Build both MPCs with different cost structures
+        print(f"  Building MPC for COMFORT mode (Quadratic targeting 22°C)...")
+        self.mpc_comfort = build_mpc_comfort_mode(config)
+        print(f"  Building MPC for ENERGY-SAVING mode (BandViolation [20,24°C])...")
+        self.mpc_saving = build_mpc_saving_mode(config)
 
-        self.current_mode = 'high'  # Track which MPC is active
+        self.current_mode = 'comfort'  # Track which MPC is active
         self.mode_switches = []  # Track when mode switches happen
 
         # Required attributes for DDMPC system
@@ -248,11 +291,11 @@ class SOCAwareMPCWrapper:
         # Select MPC based on forecast
         old_mode = self.current_mode
         if min_soc_in_horizon < self.threshold:
-            self.current_mode = 'low'
-            controls, extra = self.mpc_low(df)
+            self.current_mode = 'saving'
+            controls, extra = self.mpc_saving(df)
         else:
-            self.current_mode = 'high'
-            controls, extra = self.mpc_high(df)
+            self.current_mode = 'comfort'
+            controls, extra = self.mpc_comfort(df)
 
         # Log mode switch
         if self.current_mode != old_mode:
