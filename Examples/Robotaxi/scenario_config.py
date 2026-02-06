@@ -119,6 +119,11 @@ class ScenarioConfig:
     CO2_soft_target: float = 800.0   # Soft target [ppm] - no penalty below
     CO2_limit: float = 1200.0        # Hard constraint [ppm]
 
+    # SOC-dependent comfort relaxation (Scenario 3)
+    # When soc < threshold: w_comfort = w_base * low_weight_factor
+    soc_threshold: float = 0.1       # 10% - below this, relax comfort
+    soc_low_weight_factor: float = 0.2  # 20% of base weight when soc < threshold
+
     # Energy approximation parameters
     Q_hp_max: float = 5000.0    # Max HP power [W] (cooling or heating)
     Q_ptc_max: float = 6000.0   # Max PTC power [W]
@@ -602,50 +607,67 @@ def co2_management_scenario() -> ScenarioConfig:
 
 
 # =============================================================================
-# SCENARIO 5: SOC-Dependent Comfort Relaxation
+# SCENARIO 3: SOC-Dependent Comfort Relaxation
 # =============================================================================
 
 def soc_relaxation_scenario() -> ScenarioConfig:
     """
-    Scenario 5: SOC-Dependent Comfort Relaxation
+    Scenario 3: SOC-Dependent Comfort Relaxation
 
-    Battery is low (starting at 25%, dropping to ~15%). MPC should
-    gradually relax comfort constraints to preserve range.
+    Battery is low and draining: SOC drops from 20% to 0% over 2 hours.
+    MPC should anticipate the SOC drop and start saving energy BEFORE
+    the critical threshold (10%) is reached.
 
-    This requires stage parameter support in the MPC.
+    Timeline:
+    - t=0min:    SOC=20%  MPC sees forecast, starts planning
+    - t=40min:   SOC=13%  MPC begins saving (sees 10% threshold in horizon)
+    - t=60min:   SOC=10%  Threshold reached
+    - t=90min:   SOC=5%   Deep energy saving mode
+    - t=120min:  SOC=0%   End of scenario
+
+    MPC advantage: With 20-minute horizon, MPC sees SOC will drop below
+    10% before it happens and acts early. PID has no SOC awareness.
+
+    SOC-dependent comfort weight:
+        w_comfort = w_base        if soc >= 0.1
+        w_comfort = 0.2 * w_base  if soc < 0.1
     """
 
+    duration_hours = 2.0
+    duration_sec = duration_hours * 3600
+
     def soc_profile(t_sec: float) -> float:
-        """Declining SOC: 25% -> 15% over 30 min."""
-        initial_soc = 0.25
-        drain_rate = 0.10 / (30 * 60)  # 10% over 30 min
-        return max(0.10, initial_soc - drain_rate * t_sec)
+        """Linear SOC decline: 20% -> 0% over 2 hours."""
+        initial_soc = 0.20
+        final_soc = 0.0
+        progress = min(1.0, t_sec / duration_sec)
+        return initial_soc - progress * (initial_soc - final_soc)
 
     def passenger_profile(t_sec: float) -> int:
-        """2 passengers."""
+        """2 passengers throughout."""
         return 2
 
     def velocity_profile(t_sec: float) -> float:
-        """Normal city driving."""
+        """City driving ~30 km/h."""
         return 8.0
 
     def ambient_profile(t_sec: float) -> float:
-        """Hot ambient."""
-        return 273.15 + 33.0
+        """Hot summer day: 32°C."""
+        return 273.15 + 32.0
 
     def solar_profile(t_sec: float) -> float:
-        """Strong sun."""
-        return 700.0
+        """Moderate sun: 600 W/m²."""
+        return 600.0
 
     return ScenarioConfig(
         name="soc_relaxation",
         description="SOC-Dependent Comfort Relaxation",
 
-        duration_hours=0.5,
-        start_time_hours=15.0,
+        duration_hours=duration_hours,
+        start_time_hours=14.0,  # Afternoon
         hvac_mode='cooling',
 
-        # Start at target
+        # Start at target temperature (steady state)
         T_cabin_init=273.15 + 22.0,
         T_mass_init=273.15 + 24.0,
         T_vent_init=273.15 + 22.0,
@@ -654,18 +676,23 @@ def soc_relaxation_scenario() -> ScenarioConfig:
 
         mv_config={
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
-            'u_ptc': MVConfig(active=False),
+            'u_ptc': MVConfig(active=False),  # Summer, not needed
             'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
             'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
         },
 
-        # Weights will be modified by SOC via stage parameter
+        # Base weights - T_cabin weight gets scaled by SOC in MPC
         weights={
-            'T_cabin': 100.0,  # This gets scaled by w_comfort(soc)
+            'T_cabin': 500.0,  # Base weight, scaled by w_comfort(soc)
             'T_vent': 1.0,
             'T_ptc': 0.0,
-            'C_CO2': 50.0,
+            'C_CO2': 30.0,
+            'energy': 0.001,  # Moderate energy penalty
         },
+
+        # SOC threshold for comfort relaxation
+        soc_threshold=0.1,  # 10%
+        soc_low_weight_factor=0.2,  # w_comfort = 0.2 * w_base when soc < threshold
 
         profile_T_ambient=ambient_profile,
         profile_solar=solar_profile,
@@ -675,25 +702,29 @@ def soc_relaxation_scenario() -> ScenarioConfig:
 
         metrics=[
             'T_mean',
-            'T_max_dev',
-            'comfort_violation_Kmin',  # Integral of |T - T_target| [K*min]
+            'T_max',
+            'T_max_dev',           # Max deviation from target
+            'comfort_violation_Kmin',  # Integral of max(0, |T-22| - 2) [K*min]
             'energy_total_Wh',
-            'energy_saved_vs_baseline_Wh',
             'final_soc',
         ],
     )
 
 
 # =============================================================================
-# SCENARIO REGISTRY
+# SCENARIO REGISTRY (Paper Scenarios)
 # =============================================================================
 
 SCENARIOS = {
-    'preconditioning': preconditioning_scenario,
-    'highway_anticipation': highway_anticipation_scenario,
+    'preconditioning': preconditioning_scenario,       # S1: Pre-Conditioning
+    'highway_anticipation': highway_anticipation_scenario,  # S2: Highway Anticipation
+    'soc_relaxation': soc_relaxation_scenario,         # S3: SOC Relaxation
+}
+
+# Legacy scenarios (kept for reference but not used in paper)
+LEGACY_SCENARIOS = {
     'peak_shaving': peak_shaving_scenario,
     'co2_management': co2_management_scenario,
-    'soc_relaxation': soc_relaxation_scenario,
 }
 
 

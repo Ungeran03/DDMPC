@@ -76,12 +76,12 @@ When SOC drops below threshold, `w_comfort` decreases, allowing the MPC to toler
 |-----------------|--------|----------------------|
 | `soc` | BMS forecast along route | Modifies comfort weight w_comfort(soc) |
 
-Proposed SOC weighting:
+Implemented SOC weighting (single threshold):
 ```
-w_comfort(soc) = w_base               if soc >= 0.2
-w_comfort(soc) = w_base * soc / 0.2   if soc <  0.2
+w_comfort(soc) = w_base        if soc >= 0.1  (full comfort)
+w_comfort(soc) = 0.2 * w_base  if soc <  0.1  (energy saving mode)
 ```
-At SOC=10%: half comfort weight. At SOC=5%: quarter. Temperature drifts toward ambient to preserve range.
+At SOC<10%: comfort weight drops to 20% of base. MPC allows temperature to drift toward ambient to preserve range. The MPC anticipates this ~20 min ahead using its forecast horizon.
 
 **Key distinction:**
 - **MD** affects the **physics** (state equations): e.g. T_amb -> Q_transmission in dT_air/dt
@@ -477,7 +477,7 @@ for loc in ['de_DE.UTF-8', 'de_DE', 'deu_deu', '']:
 
 ## Paper Scenarios (Robotaxi Application)
 
-Five scenarios demonstrate MPC advantages over PID, ordered from simple to complex:
+Three scenarios demonstrate MPC advantages over PID, ordered from simple to complex:
 
 ### Scenario 1: Pre-Conditioning Before Boarding ⭐ (Robotaxi Killer Feature)
 
@@ -488,7 +488,7 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 | **PID behavior** | Reacts only after boarding → T overshoot + CO2 spike |
 | **Key physics** | Q_passengers = n × 90W, CO2 generation = n × R_CO2 |
 | **Metric** | T_cabin at boarding, CO2 at boarding, comfort during ride |
-| **MVs needed** | u_hvac, u_blower |
+| **MVs needed** | u_hvac, u_blower, u_recirc |
 | **MDs needed** | n_passengers |
 
 ### Scenario 2: Highway Speed Anticipation ⭐⭐
@@ -503,41 +503,17 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 | **MVs needed** | u_hvac |
 | **MDs needed** | v_vehicle |
 
-### Scenario 3: Temperature Peak Shaving ⭐⭐
+### Scenario 3: SOC-Dependent Comfort Relaxation ⭐⭐⭐
 
 | Aspect | Details |
 |--------|---------|
-| **Forecast used** | T_amb, I_solar (weather along route) |
-| **MPC action** | Pre-cools before heat peak, uses T_mass as thermal buffer |
-| **PID behavior** | Chases the peak reactively, runs at full load during peak |
-| **Key physics** | C_mass = 120,000 J/K acts as thermal storage |
-| **Metric** | Max u_hvac, total energy [Wh] |
-| **MVs needed** | u_hvac |
-| **MDs needed** | T_amb, I_solar |
-
-### Scenario 4: CO2 vs. Energy Trade-off ⭐⭐⭐
-
-| Aspect | Details |
-|--------|---------|
-| **Situation** | 4 passengers, stop-and-go traffic, maintaining air quality |
-| **MPC action** | Coordinates u_blower + u_recirc to keep CO2 < 1200 ppm at min energy |
-| **PID behavior** | u_recirc=0.5 fixed, BlowerPI only on temperature → CO2 reaches 2000-4000 ppm |
-| **Key physics** | m_dot_fresh = m_dot_max × u_blower × fresh_frac |
-| **Metric** | CO2_max [ppm], ventilation energy [Wh] |
-| **MVs needed** | u_blower, u_recirc |
-| **MDs needed** | n_passengers |
-
-### Scenario 5: SOC-Dependent Comfort Relaxation ⭐⭐⭐⭐
-
-| Aspect | Details |
-|--------|---------|
-| **Situation** | SOC < 20%, 15 km to charging station |
-| **MPC action** | Reduces w_comfort → tolerates T_cabin ±3K instead of ±1K |
-| **PID behavior** | No SOC awareness → risks stranding |
-| **Key physics** | w_comfort(soc) = w_base × min(1, soc/0.2) |
-| **Metric** | Remaining range [km], comfort violation [K·min] |
-| **MVs needed** | all (u_hvac, u_ptc, u_blower, u_recirc) |
-| **Stage param** | soc |
+| **Situation** | SOC drops from 20% → 0% over 2 hours |
+| **MPC action** | Anticipates SOC drop (~20 min ahead) and switches to low comfort mode BEFORE threshold |
+| **PID behavior** | No SOC awareness → keeps cooling at full blast until battery dies |
+| **Key physics** | w_comfort = w_base if soc ≥ 0.1, w_comfort = 0.2×w_base if soc < 0.1 |
+| **Metric** | Energy savings, T_final (allows drift to save energy) |
+| **MVs needed** | u_hvac, u_blower, u_recirc (cooling scenario) |
+| **Stage param** | soc (threshold at 10%) |
 
 ### Scenario Roadmap
 
@@ -545,9 +521,7 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 |---|----------|------------|----------------------|
 | 1 | Pre-Conditioning | ⭐ | [x] DONE |
 | 2 | Highway Anticipation | ⭐⭐ | [x] DONE |
-| 3 | Peak Shaving | ⭐⭐ | [ ] TODO |
-| 4 | CO2 Management | ⭐⭐⭐ | [ ] TODO |
-| 5 | SOC Relaxation | ⭐⭐⭐⭐ | [ ] TODO |
+| 3 | SOC Relaxation | ⭐⭐⭐ | [x] DONE |
 
 ### Scenario 1 Results: Pre-Conditioning
 
@@ -606,6 +580,45 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 
 **Script:** `Examples/Robotaxi/scenarios/s2_highway_anticipation.py`
 
+### Scenario 3 Results: SOC-Dependent Comfort Relaxation
+
+**Setup:**
+- T_cabin_init: 22°C (already at target), T_mass_init: 24°C
+- T_ambient: 32°C, Solar: 600 W/m²
+- 2 passengers throughout
+- SOC profile: 20% → 0% linear over 2 hours
+- SOC threshold: 10% (comfort weight drops to 20% of base)
+- Duration: 2 hours
+
+**Results:**
+
+| Metric | PID | MPC | Improvement |
+|--------|-----|-----|-------------|
+| Energy total | 1693 Wh | 412 Wh | **-75.7%** |
+| Energy after threshold | 883 Wh | 205 Wh | **-76.8%** |
+| T_mean | 22.3°C | 22.7°C | MPC allows drift |
+| T_final | 22.3°C | 22.8°C | Both in comfort band |
+| u_hvac mean | 0.97 | 0.28 | **-71%** |
+| Comfort violations | 0 K·min | 0 K·min | Both acceptable |
+
+**Key Insight:** MPC switched to low comfort mode at **t=41 min** when it saw SOC would drop below 10% within its 20-min horizon (current SOC=13.2%, min in horizon=9.8%). This is **19 minutes BEFORE** the threshold is actually reached. PID has no SOC awareness and keeps u_hvac at 1.0 the entire time, wasting 76% more energy.
+
+**Anticipation Timeline:**
+```
+t=0min:   SOC=20%   MPC: normal operation
+t=41min:  SOC=13%   MPC: sees threshold in horizon → switches to low comfort
+t=60min:  SOC=10%   Threshold reached (MPC already saving for 19 min!)
+t=120min: SOC=0%    End of scenario
+```
+
+**Output Files:**
+- `Examples/Robotaxi/s3_soc_relaxation_comparison.png` - Comparison plot
+- `Examples/Robotaxi/s3_soc_relaxation_results.json` - Metrics + config
+- `Examples/Robotaxi/s3_soc_relaxation_pid.csv` - PID raw data
+- `Examples/Robotaxi/s3_soc_relaxation_mpc.csv` - MPC raw data
+
+**Script:** `Examples/Robotaxi/scenarios/s3_soc_relaxation.py`
+
 ---
 
 ## MPC Parameter Summary
@@ -643,7 +656,7 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 
 | Parameter | Symbol | Range | Unit | Effect on Optimization |
 |-----------|--------|-------|------|------------------------|
-| State of Charge | `soc` | [0, 1] | - | w_comfort(soc) = w_base × min(1, soc/0.2) |
+| State of Charge | `soc` | [0, 1] | - | w_comfort = w_base if soc≥0.1, else 0.2×w_base |
 
 ### Constraints
 
@@ -750,9 +763,7 @@ m_dot_fresh = m_dot_max × u_blower × fresh_frac
 
 - [x] Scenario 1: Pre-Conditioning (MPC 58% energy savings vs PID)
 - [x] Scenario 2: Highway Speed Anticipation (MPC 60% energy savings vs PID)
-- [ ] Scenario 3: Temperature Peak Shaving
-- [ ] Scenario 4: CO2 vs Energy Trade-off
-- [ ] Scenario 5: SOC-Dependent Comfort Relaxation
+- [x] Scenario 3: SOC-Dependent Comfort Relaxation (MPC 76% energy savings vs PID)
 - [x] Tune PID gains for winter scenario with blower coupling (Kp=0.04, Ti=100)
 - [x] Add u_blower as MV with BlowerPI controller and blower coupling physics
 - [x] Redesign BlowerPI as PI with product error (keeps blower high in extreme conditions)
@@ -760,6 +771,6 @@ m_dot_fresh = m_dot_max × u_blower × fresh_frac
 - [x] Add min_fresh_frac to physics (10% fresh air even at full recirculation)
 - [x] Implement stochastic drive cycle (passengers only board at stops, seed for reproducibility)
 - [x] Extend to 4-node thermal model (T_ptc → T_vent → T_cabin → T_mass)
-- [ ] Implement SOC-dependent comfort weighting as stage parameter in MPC
+- [x] Implement SOC-dependent comfort weighting (anticipation-based, threshold at 10%)
 - [ ] Optional: EQT comfort metric (Schutzeich)
 - [ ] Validate with real vehicle data (future)

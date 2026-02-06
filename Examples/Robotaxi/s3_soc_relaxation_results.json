@@ -1,0 +1,50 @@
+{
+  "scenario": "soc_relaxation",
+  "description": "SOC-Dependent Comfort Relaxation",
+  "timestamp": "2026-02-06T15:52:07.636561",
+  "config": {
+    "duration_hours": 2.0,
+    "hvac_mode": "cooling",
+    "T_cabin_init_C": 22.0,
+    "T_mass_init_C": 24.0,
+    "soc_threshold": 0.1,
+    "soc_low_weight_factor": 0.2,
+    "weights": {
+      "T_cabin": 500.0,
+      "T_vent": 1.0,
+      "T_ptc": 0.0,
+      "C_CO2": 30.0,
+      "energy": 0.001
+    }
+  },
+  "metrics": {
+    "PID": {
+      "T_mean_C": 22.31594682563964,
+      "T_max_C": 23.393360528296284,
+      "T_min_C": 22.0,
+      "T_final_C": 22.262455785633335,
+      "T_max_dev_K": 1.3933605282962844,
+      "comfort_violation_Kmin": 0.0,
+      "energy_total_Wh": 1693.0186913172022,
+      "energy_before_threshold_Wh": 809.6725785109724,
+      "energy_after_threshold_Wh": 883.3461128062304,
+      "u_hvac_mean": 0.9704086794736511,
+      "u_hvac_mean_before": 0.9408173589473019,
+      "u_hvac_mean_after": 1.0
+    },
+    "MPC": {
+      "T_mean_C": 22.703127518715103,
+      "T_max_C": 22.90190015744065,
+      "T_min_C": 22.0,
+      "T_final_C": 22.84395269419872,
+      "T_max_dev_K": 0.9019001574406502,
+      "comfort_violation_Kmin": 0.0,
+      "energy_total_Wh": 412.05422690849383,
+      "energy_before_threshold_Wh": 207.3532776118982,
+      "energy_after_threshold_Wh": 204.70094929659572,
+      "u_hvac_mean": 0.27585346668581356,
+      "u_hvac_mean_before": 0.26987515937895096,
+      "u_hvac_mean_after": 0.28183177399267634
+    }
+  }
+}
