@@ -400,11 +400,11 @@ def highway_anticipation_scenario() -> ScenarioConfig:
         },
 
         weights={
-            'T_cabin': 100.0,
+            'T_cabin': 1000.0,  # High weight to ensure comfort band [20-24°C] is reached
             'T_vent': 1.0,
             'T_ptc': 0.0,
             'C_CO2': 50.0,
-            'energy': 0.001,  # Higher energy penalty to encourage waiting for better eta
+            'energy': 0.00005,  # Very low energy penalty, MPC still benefits from eta_radiator
         },
 
         profile_T_ambient=ambient_profile,

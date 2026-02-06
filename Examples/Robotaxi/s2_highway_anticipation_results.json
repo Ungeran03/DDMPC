@@ -1,18 +1,18 @@
 {
   "scenario": "highway_anticipation",
   "description": "Highway Speed Anticipation for Radiator Efficiency",
-  "timestamp": "2026-02-06T15:06:19.331093",
+  "timestamp": "2026-02-06T15:14:37.940977",
   "config": {
     "duration_hours": 0.5,
     "hvac_mode": "cooling",
     "T_cabin_init_C": 30.0,
     "T_mass_init_C": 35.0,
     "weights": {
-      "T_cabin": 100.0,
+      "T_cabin": 1000.0,
       "T_vent": 1.0,
       "T_ptc": 0.0,
       "C_CO2": 50.0,
-      "energy": 0.001
+      "energy": 5e-05
     }
   },
   "metrics": {
@@ -33,20 +33,20 @@
       "CO2_mean": 726.372405776003
     },
     "MPC": {
-      "energy_city_Wh": 28.38939185170455,
-      "energy_accel_Wh": 26.432584866311355,
-      "energy_highway_Wh": 109.33432388058355,
-      "energy_total_Wh": 186.6488318109254,
-      "T_mean_C": 25.060389766022027,
+      "energy_city_Wh": 28.485675826205956,
+      "energy_accel_Wh": 26.37602196760097,
+      "energy_highway_Wh": 132.1936182127207,
+      "energy_total_Wh": 210.1208864197013,
+      "T_mean_C": 24.809293530028445,
       "T_max_C": 30.956420415821356,
-      "T_min_C": 23.659705736672493,
-      "T_at_highway_start_C": 26.36490762117711,
-      "T_mean_deviation_K": 3.0603897660220243,
+      "T_min_C": 23.316723890827404,
+      "T_at_highway_start_C": 26.420924305899746,
+      "T_mean_deviation_K": 2.809293530028445,
       "T_max_deviation_K": 8.956420415821356,
       "eta_radiator_city": 0.6417343447131054,
       "eta_radiator_highway": 0.9055621985812191,
-      "CO2_max": 1027.8742484210297,
-      "CO2_mean": 978.2258807332344
+      "CO2_max": 1150.0771882784668,
+      "CO2_mean": 872.7867729415827
     }
   }
 }

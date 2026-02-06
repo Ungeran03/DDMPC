@@ -589,14 +589,14 @@ Five scenarios demonstrate MPC advantages over PID, ordered from simple to compl
 
 | Metric | PID | MPC | Improvement |
 |--------|-----|-----|-------------|
-| Energy total | 519 Wh | 187 Wh | **-64.0%** |
-| Energy city (t=0-3min) | 27 Wh | 28 Wh | ~same |
-| Energy highway (t=5-25min) | 376 Wh | 109 Wh | **-71%** |
-| T at highway start | 25.3°C | 26.4°C | MPC warmer |
+| Energy total | 519 Wh | 210 Wh | **-59.5%** |
+| Energy city (t=0-3min) | 27 Wh | 29 Wh | ~same |
+| Energy highway (t=5-25min) | 376 Wh | 132 Wh | **-65%** |
+| T steady state (t>15min) | 22.2°C | 23.5°C | Both in band |
 | eta_radiator city | 0.64 | 0.64 | same |
 | eta_radiator highway | 0.91 | 0.91 | same |
 
-**Key Insight:** MPC saves 64% energy by exploiting better radiator efficiency on highway. At city speed (5 m/s), eta=0.64; at highway (25 m/s), eta=0.91. MPC doesn't need to push as hard because each Watt of electrical power produces 40% more cooling at highway speed.
+**Key Insight:** MPC saves 60% energy by exploiting better radiator efficiency on highway. At city speed (5 m/s), eta=0.64; at highway (25 m/s), eta=0.91. MPC settles at 23.5°C (upper comfort band) instead of 22°C, trading 1.3K comfort for significant energy savings. Both stay within comfort band [20-24°C].
 
 **Output Files:**
 - `Examples/Robotaxi/s2_highway_anticipation_comparison.png` - Comparison plot
@@ -749,7 +749,7 @@ m_dot_fresh = m_dot_max × u_blower × fresh_frac
 ## Next Steps / TODO
 
 - [x] Scenario 1: Pre-Conditioning (MPC 58% energy savings vs PID)
-- [x] Scenario 2: Highway Speed Anticipation (MPC 64% energy savings vs PID)
+- [x] Scenario 2: Highway Speed Anticipation (MPC 60% energy savings vs PID)
 - [ ] Scenario 3: Temperature Peak Shaving
 - [ ] Scenario 4: CO2 vs Energy Trade-off
 - [ ] Scenario 5: SOC-Dependent Comfort Relaxation
