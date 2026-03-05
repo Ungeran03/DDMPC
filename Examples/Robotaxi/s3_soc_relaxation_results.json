@@ -1,7 +1,7 @@
 {
   "scenario": "soc_relaxation",
   "description": "SOC-Dependent Comfort Relaxation",
-  "timestamp": "2026-02-06T17:27:33.612667",
+  "timestamp": "2026-03-05T10:39:48.972117",
   "config": {
     "duration_hours": 2.0,
     "hvac_mode": "cooling",
@@ -30,21 +30,23 @@
       "energy_after_threshold_Wh": 883.3461128062304,
       "u_hvac_mean": 0.9753842054962892,
       "u_hvac_mean_before": 0.9507684109925786,
-      "u_hvac_mean_after": 1.0
+      "u_hvac_mean_after": 1.0,
+      "time_in_band_pct": 100.0
     },
     "MPC": {
-      "T_mean_C": 24.06660452900594,
-      "T_max_C": 25.198155923929164,
+      "T_mean_C": 22.643488458775366,
+      "T_max_C": 23.009900157440597,
       "T_min_C": 22.0,
-      "T_final_C": 25.16990218220849,
-      "T_max_dev_K": 3.198155923929164,
-      "comfort_violation_Kmin": 70.9610426532696,
-      "energy_total_Wh": 439.52933444531044,
-      "energy_before_threshold_Wh": 233.4469164733968,
-      "energy_after_threshold_Wh": 206.0824179719137,
-      "u_hvac_mean": 0.2931671547542572,
-      "u_hvac_mean_before": 0.3025289175459677,
-      "u_hvac_mean_after": 0.28380539196254684
+      "T_final_C": 22.74366147677688,
+      "T_max_dev_K": 1.0099001574405975,
+      "comfort_violation_Kmin": 0.0,
+      "energy_total_Wh": 501.5329341480946,
+      "energy_before_threshold_Wh": 254.35566302401202,
+      "energy_after_threshold_Wh": 247.17727112408264,
+      "u_hvac_mean": 0.3331188469981961,
+      "u_hvac_mean_before": 0.33044895720705725,
+      "u_hvac_mean_after": 0.3357887367893349,
+      "time_in_band_pct": 100.0
     }
   }
 }

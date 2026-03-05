@@ -153,14 +153,14 @@ def build_mpc_saving_mode(config: ScenarioConfig):
 
     objectives = []
 
-    # Temperature: Very low weight - allow drift
+    # Temperature: Reduced weight but still significant - stay near comfort band
     objectives.append(Objective(
         feature=T_cabin,
-        cost=Quadratic(weight=5.0)  # 100x lower than comfort mode
+        cost=Quadratic(weight=50.0)  # 10x lower than comfort mode (was 5.0)
     ))
 
     # T_vent tracking
-    objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=0.01)))
+    objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=0.1)))
 
     # CO2 penalty
     objectives.append(Objective(
@@ -168,10 +168,10 @@ def build_mpc_saving_mode(config: ScenarioConfig):
         cost=Quadratic(weight=10.0, norm=100.0)
     ))
 
-    # High energy penalty
+    # Energy penalty - moderate, not overwhelming
     objectives.append(Objective(
         feature=u_hvac,
-        cost=Quadratic(weight=200.0)
+        cost=Quadratic(weight=50.0)  # was 200.0
     ))
 
     return _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2)
@@ -376,6 +376,10 @@ def compute_metrics(df: pd.DataFrame, config: ScenarioConfig) -> dict:
     metrics['u_hvac_mean'] = df['hvac_modulation'].mean()
     metrics['u_hvac_mean_before'] = df['hvac_modulation'].iloc[:threshold_time_min].mean()
     metrics['u_hvac_mean_after'] = df['hvac_modulation'].iloc[threshold_time_min:].mean()
+
+    # Time in comfort band [20, 24°C]
+    in_band = ((T_cabin_C >= 20) & (T_cabin_C <= 24)).sum()
+    metrics['time_in_band_pct'] = in_band / len(T_cabin_C) * 100
 
     return metrics
 

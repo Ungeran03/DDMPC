@@ -298,6 +298,10 @@ def compute_metrics(df: pd.DataFrame, config: ScenarioConfig) -> dict:
         metrics['CO2_max'] = df['co2_concentration'].max()
         metrics['CO2_mean'] = df['co2_concentration'].mean()
 
+    # Time in comfort band [20, 24°C]
+    in_band = ((T_cabin_C >= 20) & (T_cabin_C <= 24)).sum()
+    metrics['time_in_band_pct'] = in_band / len(T_cabin_C) * 100
+
     return metrics
 
 

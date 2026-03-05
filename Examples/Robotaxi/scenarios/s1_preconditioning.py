@@ -113,9 +113,9 @@ def build_mpc_from_config(config: ScenarioConfig):
     """
     Build MPC controller from scenario configuration.
 
-    Uses simple Quadratic costs for reliable IPOPT convergence:
+    Cost functions:
     - Temperature: Quadratic toward target (22°C)
-    - CO2: Quadratic toward target (600 ppm ambient level)
+    - CO2: Quadratic toward low target
     - Energy: Penalize u_hvac directly
     - Smoothness: Control change penalties
     """
@@ -305,6 +305,11 @@ def compute_metrics(df: pd.DataFrame, config: ScenarioConfig, boarding_time_sec:
         metrics['energy_preconditioning_Wh'] = df['hvac_power'].iloc[:boarding_idx].sum() * 60 / 3600
     else:
         metrics['energy_preconditioning_Wh'] = np.nan
+
+    # Time in comfort band [20, 24°C]
+    T_cabin_C = df['cabin_temperature'] - 273.15
+    in_band = ((T_cabin_C >= 20) & (T_cabin_C <= 24)).sum()
+    metrics['time_in_band_pct'] = in_band / len(T_cabin_C) * 100
 
     return metrics
 

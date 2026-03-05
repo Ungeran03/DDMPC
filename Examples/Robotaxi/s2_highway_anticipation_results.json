@@ -1,7 +1,7 @@
 {
   "scenario": "highway_anticipation",
   "description": "Highway Speed Anticipation for Radiator Efficiency",
-  "timestamp": "2026-02-06T15:14:37.940977",
+  "timestamp": "2026-03-05T10:39:27.528042",
   "config": {
     "duration_hours": 0.5,
     "hvac_mode": "cooling",
@@ -30,7 +30,8 @@
       "eta_radiator_city": 0.6417343447131054,
       "eta_radiator_highway": 0.9055621985812191,
       "CO2_max": 771.0147114371275,
-      "CO2_mean": 726.372405776003
+      "CO2_mean": 726.372405776003,
+      "time_in_band_pct": 70.0
     },
     "MPC": {
       "energy_city_Wh": 28.485675826205956,
@@ -46,7 +47,8 @@
       "eta_radiator_city": 0.6417343447131054,
       "eta_radiator_highway": 0.9055621985812191,
       "CO2_max": 1150.0771882784668,
-      "CO2_mean": 872.7867729415827
+      "CO2_mean": 872.7867729415827,
+      "time_in_band_pct": 63.33333333333333
     }
   }
 }

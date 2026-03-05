@@ -1,7 +1,7 @@
 {
   "scenario": "preconditioning",
   "description": "Pre-Conditioning Before Passenger Boarding",
-  "timestamp": "2026-02-06T14:56:50.552907",
+  "timestamp": "2026-03-05T10:39:06.039691",
   "config": {
     "duration_hours": 0.5,
     "hvac_mode": "cooling",
@@ -24,7 +24,8 @@
       "CO2_max": 1005.1729597354147,
       "CO2_mean": 739.5576871243925,
       "energy_total_Wh": 366.7133678233004,
-      "energy_preconditioning_Wh": 75.86946551485636
+      "energy_preconditioning_Wh": 75.86946551485636,
+      "time_in_band_pct": 86.66666666666667
     },
     "MPC": {
       "T_at_boarding_C": 23.139747597862026,
@@ -34,7 +35,8 @@
       "CO2_max": 1000.076677056522,
       "CO2_mean": 748.3810835997789,
       "energy_total_Wh": 154.39164753584137,
-      "energy_preconditioning_Wh": 54.22683672994683
+      "energy_preconditioning_Wh": 54.22683672994683,
+      "time_in_band_pct": 83.33333333333334
     }
   }
 }
