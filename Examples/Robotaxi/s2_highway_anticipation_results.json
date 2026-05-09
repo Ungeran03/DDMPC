@@ -1,18 +1,18 @@
 {
   "scenario": "highway_anticipation",
   "description": "Highway Speed Anticipation for Radiator Efficiency",
-  "timestamp": "2026-03-05T10:39:27.528042",
+  "timestamp": "2026-05-08T21:26:46.986348",
   "config": {
     "duration_hours": 0.5,
     "hvac_mode": "cooling",
-    "T_cabin_init_C": 30.0,
-    "T_mass_init_C": 35.0,
+    "T_cabin_init_C": 25.0,
+    "T_mass_init_C": 27.0,
     "weights": {
-      "T_cabin": 1000.0,
-      "T_vent": 1.0,
+      "T_cabin": 5000.0,
+      "T_vent": 0.0,
       "T_ptc": 0.0,
       "C_CO2": 50.0,
-      "energy": 5e-05
+      "energy": 0.0
     }
   },
   "metrics": {
@@ -21,34 +21,34 @@
       "energy_accel_Wh": 26.738931029712727,
       "energy_highway_Wh": 375.4529594261968,
       "energy_total_Wh": 518.8614795516318,
-      "T_mean_C": 23.76329024092453,
-      "T_max_C": 30.0,
-      "T_min_C": 22.193548901525105,
-      "T_at_highway_start_C": 25.330271180987097,
-      "T_mean_deviation_K": 1.763290240924537,
-      "T_max_deviation_K": 8.0,
+      "T_mean_C": 22.497740586736562,
+      "T_max_C": 25.0,
+      "T_min_C": 22.226147995308224,
+      "T_at_highway_start_C": 22.528060456793412,
+      "T_mean_deviation_K": 0.4977405867365652,
+      "T_max_deviation_K": 3.0,
       "eta_radiator_city": 0.6417343447131054,
       "eta_radiator_highway": 0.9055621985812191,
-      "CO2_max": 771.0147114371275,
-      "CO2_mean": 726.372405776003,
-      "time_in_band_pct": 70.0
+      "CO2_max": 884.6426207189445,
+      "CO2_mean": 834.7443408576457,
+      "time_in_band_pct": 96.66666666666667
     },
     "MPC": {
-      "energy_city_Wh": 28.485675826205956,
-      "energy_accel_Wh": 26.37602196760097,
-      "energy_highway_Wh": 132.1936182127207,
-      "energy_total_Wh": 210.1208864197013,
-      "T_mean_C": 24.809293530028445,
-      "T_max_C": 30.956420415821356,
-      "T_min_C": 23.316723890827404,
-      "T_at_highway_start_C": 26.420924305899746,
-      "T_mean_deviation_K": 2.809293530028445,
-      "T_max_deviation_K": 8.956420415821356,
+      "energy_city_Wh": 28.279764660106963,
+      "energy_accel_Wh": 23.841463319425262,
+      "energy_highway_Wh": 106.87050673801951,
+      "energy_total_Wh": 183.9978599940312,
+      "T_mean_C": 22.356171325746907,
+      "T_max_C": 25.835191659835118,
+      "T_min_C": 21.854811411679975,
+      "T_at_highway_start_C": 22.250915037250138,
+      "T_mean_deviation_K": 0.4897209895796626,
+      "T_max_deviation_K": 3.835191659835118,
       "eta_radiator_city": 0.6417343447131054,
       "eta_radiator_highway": 0.9055621985812191,
-      "CO2_max": 1150.0771882784668,
-      "CO2_mean": 872.7867729415827,
-      "time_in_band_pct": 63.33333333333333
+      "CO2_max": 1000.0487619344084,
+      "CO2_mean": 773.7057931334664,
+      "time_in_band_pct": 90.0
     }
   }
 }

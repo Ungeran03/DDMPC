@@ -189,15 +189,24 @@ def create_whitebox_T_cabin() -> WhiteBox:
     """
     WhiteBox predictor for cabin air temperature change.
 
-    Simplified energy balance (MPC does NOT know T_mass):
+    Energy balance (MPC does NOT know T_mass directly):
         C_cabin * dT/dt = m_dot*c_p*(T_vent - T_cabin)
                         + f_solar_air * Q_solar
                         + Q_passengers
-                        + Q_transmission
+                        + Q_transmission_eff
 
-    Note: The convection term with T_mass is OMITTED because T_mass is
-    unmeasurable in a real vehicle. The hidden thermal mass acts as an
-    unmodeled disturbance. The MPC compensates through feedback.
+    The hidden thermal mass T_mass would normally contribute
+    h_conv*A_int*(T_mass - T_cabin) ≈ 80 W/K * (T_mass - T_cabin).
+    Since T_mass is unmeasurable, we approximate its coupling using a
+    quasi-steady assumption: T_mass relaxes toward the average of
+    T_cabin and T_ambient on a slow timescale, giving an effective
+    coupling that scales with (T_amb - T_cabin). We fold this into
+    an augmented envelope UA: UA_eff = UA_real + alpha_mass * h_conv*A_int.
+
+    With alpha_mass=0.5 (half-weight to mass coupling), this adds
+    40 W/K of "phantom transmission" to the predictor — eliminating
+    the systematic cooldown bias that otherwise leaves T_cabin ~1K
+    above target in steady cooling.
     """
 
     T_cab = T_cabin.source[0]
@@ -208,14 +217,21 @@ def create_whitebox_T_cabin() -> WhiteBox:
     n_pass = n_passengers.source[0]
     head = heading.source[0]
 
+    # Effective UA approximating the hidden T_mass coupling
+    h_conv = 10.0
+    A_int = 8.0
+    alpha_mass = 0.5  # T_mass treated as half-weighted lag of (T_cabin, T_amb)
+    UA_mass_phantom = alpha_mass * h_conv * A_int  # 40 W/K
+    UA_eff = UA_opaque + UA_window + UA_mass_phantom
+
     # Mass flow from HVAC duct
     m_dot = m_dot_blower_max * u_bl
 
     # Heat from HVAC duct
     Q_from_hvac = m_dot * c_p_air * (T_v - T_cab)
 
-    # Transmission through envelope
-    Q_transmission = (UA_opaque + UA_window) * (T_amb - T_cab)
+    # Effective transmission (envelope + phantom mass coupling)
+    Q_transmission = UA_eff * (T_amb - T_cab)
 
     # Solar gain (air portion only)
     solar_factor = 0.3 + 0.2 * ca.fabs(ca.sin(head))
@@ -225,10 +241,8 @@ def create_whitebox_T_cabin() -> WhiteBox:
     # Passenger heat load
     Q_passengers = n_pass * 90.0
 
-    # Total heat (NO T_mass convection - hidden from MPC)
     Q_total = Q_from_hvac + Q_transmission + Q_solar_air + Q_passengers
 
-    # Temperature change
     dT = (dt / C_cabin) * Q_total
 
     wb = WhiteBox(

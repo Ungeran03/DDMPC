@@ -127,8 +127,8 @@ def build_mpc_comfort_mode(config: ScenarioConfig):
         cost=Quadratic(weight=500.0)
     ))
 
-    # T_vent tracking
-    objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=1.0)))
+    # T_vent tracking removed: target 22C conflicts with cooling
+    # (vent must be cold to cool cabin)
 
     # CO2 penalty
     objectives.append(Objective(
@@ -153,14 +153,15 @@ def build_mpc_saving_mode(config: ScenarioConfig):
 
     objectives = []
 
-    # Temperature: Reduced weight but still significant - stay near comfort band
+    # Temperature: Very low weight - allow drift toward upper comfort band
+    # This is the SHOWCASE of S3: visible graceful degradation after SOC threshold
     objectives.append(Objective(
         feature=T_cabin,
-        cost=Quadratic(weight=50.0)  # 10x lower than comfort mode (was 5.0)
+        cost=Quadratic(weight=5.0)  # 100x lower than comfort mode
     ))
 
-    # T_vent tracking
-    objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=0.1)))
+    # T_vent tracking removed: target 22C conflicts with cooling (vent must be cold)
+    # objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=0.01)))
 
     # CO2 penalty
     objectives.append(Objective(
@@ -168,10 +169,10 @@ def build_mpc_saving_mode(config: ScenarioConfig):
         cost=Quadratic(weight=10.0, norm=100.0)
     ))
 
-    # Energy penalty - moderate, not overwhelming
+    # High energy penalty: drives MPC to reduce cooling effort
     objectives.append(Objective(
         feature=u_hvac,
-        cost=Quadratic(weight=50.0)  # was 200.0
+        cost=Quadratic(weight=200.0)
     ))
 
     return _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2)
