@@ -16,9 +16,9 @@ Key insight:
 - PID has no SOC awareness -> keeps cooling at full blast regardless of battery
 - Result: MPC preserves range by relaxing comfort early; PID drains battery
 
-SOC-dependent comfort weight:
-    w_comfort = w_base        if soc >= 0.1  (full comfort)
-    w_comfort = 0.2 * w_base  if soc < 0.1   (save energy)
+SOC-dependent objective (two weight sets, see ScenarioConfig):
+    comfort mode (min SOC in horizon >= 0.1): weights          (tight tracking)
+    saving mode  (min SOC in horizon <  0.1): weights_saving   (energy dominates)
 
 Metrics:
 - Energy consumption (total and per phase)
@@ -34,15 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from configuration import *
 from scenario_config import soc_relaxation_scenario, ScenarioConfig, MVConfig
-from s3_T_cabin_WB import (
-    create_whitebox_T_ptc,
-    create_whitebox_T_vent,
-    create_whitebox_T_cabin,
-    create_whitebox_CO2,
-)
+from mpc_builder import build_mpc_from_config
 from controllers import FixedPID, BlowerPI, PTCRelay
-from ddmpc.controller.model_predictive.nlp import NLP, Objective, Constraint
-from ddmpc.controller.model_predictive.costs import Quadratic, BandViolation
 
 import numpy as np
 import pandas as pd
@@ -70,8 +63,8 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
             'T_cabin_init_C': config.T_cabin_init - 273.15,
             'T_mass_init_C': config.T_mass_init - 273.15,
             'soc_threshold': config.soc_threshold,
-            'soc_low_weight_factor': config.soc_low_weight_factor,
             'weights': config.weights,
+            'weights_saving': config.weights_saving,
         },
         'metrics': metrics_all,
     }
@@ -99,6 +92,8 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
                 'v_vehicle_m_s': df['vehicle_speed'] if 'vehicle_speed' in df.columns else np.nan,
                 'solar_W_m2': df['solar_irradiance'] if 'solar_irradiance' in df.columns else np.nan,
                 'P_hvac_W': df['hvac_power'] if 'hvac_power' in df.columns else np.nan,
+                'P_hp_W': df['hp_power'] if 'hp_power' in df.columns else np.nan,
+                'P_blower_W': df['blower_power'] if 'blower_power' in df.columns else np.nan,
             })
             # Add SOC if available
             if 'soc' in df.columns:
@@ -109,160 +104,30 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
     return save_path
 
 
-def build_mpc_comfort_mode(config: ScenarioConfig):
-    """
-    Build MPC for COMFORT mode: High w_T, no w_energy.
-    MPC maintains temperature tightly.
-    """
-    wb_T_ptc = create_whitebox_T_ptc()
-    wb_T_vent = create_whitebox_T_vent(hvac_mode=config.hvac_mode)
-    wb_T_cabin = create_whitebox_T_cabin()
-    wb_CO2 = create_whitebox_CO2()
-
-    objectives = []
-
-    # Temperature: High weight for strict tracking
-    objectives.append(Objective(
-        feature=T_cabin,
-        cost=Quadratic(weight=500.0)
-    ))
-
-    # T_vent tracking removed: target 22C conflicts with cooling
-    # (vent must be cold to cool cabin)
-
-    # CO2 penalty
-    objectives.append(Objective(
-        feature=C_CO2,
-        cost=Quadratic(weight=30.0, norm=100.0)
-    ))
-
-    # NO energy penalty in comfort mode!
-
-    return _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2)
-
-
-def build_mpc_saving_mode(config: ScenarioConfig):
-    """
-    Build MPC for ENERGY-SAVING mode: Low w_T, high w_energy.
-    MPC sacrifices comfort to save energy.
-    """
-    wb_T_ptc = create_whitebox_T_ptc()
-    wb_T_vent = create_whitebox_T_vent(hvac_mode=config.hvac_mode)
-    wb_T_cabin = create_whitebox_T_cabin()
-    wb_CO2 = create_whitebox_CO2()
-
-    objectives = []
-
-    # Temperature: Very low weight - allow drift toward upper comfort band
-    # This is the SHOWCASE of S3: visible graceful degradation after SOC threshold
-    objectives.append(Objective(
-        feature=T_cabin,
-        cost=Quadratic(weight=5.0)  # 100x lower than comfort mode
-    ))
-
-    # T_vent tracking removed: target 22C conflicts with cooling (vent must be cold)
-    # objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=0.01)))
-
-    # CO2 penalty
-    objectives.append(Objective(
-        feature=C_CO2,
-        cost=Quadratic(weight=10.0, norm=100.0)
-    ))
-
-    # High energy penalty: drives MPC to reduce cooling effort
-    objectives.append(Objective(
-        feature=u_hvac,
-        cost=Quadratic(weight=200.0)
-    ))
-
-    return _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2)
-
-
-def _build_mpc_common(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2):
-    """Build MPC with standard constraints."""
-    return _build_mpc_impl(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2, add_T_constraint=False)
-
-
-def _build_mpc_common_with_T_constraint(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2):
-    """Build MPC with additional hard T_cabin constraint."""
-    return _build_mpc_impl(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2, add_T_constraint=True)
-
-
-def _build_mpc_impl(config, objectives, wb_T_vent, wb_T_cabin, wb_CO2, add_T_constraint=False):
-    # Smoothness penalties
-    mv_cfg = config.mv_config
-    if mv_cfg['u_hvac'].active:
-        objectives.append(Objective(feature=u_hvac_change, cost=Quadratic(weight=mv_cfg['u_hvac'].weight_change)))
-    if mv_cfg['u_blower'].active:
-        objectives.append(Objective(feature=u_blower_change, cost=Quadratic(weight=mv_cfg['u_blower'].weight_change)))
-    if mv_cfg['u_recirc'].active:
-        objectives.append(Objective(feature=u_recirc_change, cost=Quadratic(weight=mv_cfg['u_recirc'].weight_change)))
-
-    # Build constraints
-    constraints = []
-    if mv_cfg['u_hvac'].active:
-        constraints.append(Constraint(feature=u_hvac, lb=mv_cfg['u_hvac'].lb, ub=mv_cfg['u_hvac'].ub))
-    if mv_cfg['u_blower'].active:
-        constraints.append(Constraint(feature=u_blower, lb=mv_cfg['u_blower'].lb, ub=mv_cfg['u_blower'].ub))
-    if mv_cfg['u_recirc'].active:
-        constraints.append(Constraint(feature=u_recirc, lb=mv_cfg['u_recirc'].lb, ub=mv_cfg['u_recirc'].ub))
-    constraints.append(Constraint(feature=C_CO2, lb=0, ub=config.CO2_limit))
-
-    # Add hard T_cabin constraint for saving mode (prevents runaway)
-    if add_T_constraint:
-        constraints.append(Constraint(feature=T_cabin, lb=273.15 + 18.0, ub=273.15 + 28.0))
-
-    # Create MPC
-    mpc = ModelPredictive(
-        step_size=one_minute,
-        nlp=NLP(
-            model=model,
-            N=20,  # 20-minute horizon
-            control_change_step=1,
-            objectives=objectives,
-            constraints=constraints,
-        ),
-        forecast_callback=system.get_forecast,
-        solution_plotter=mpc_plotter,
-        show_solution_plot=False,
-        save_solution_plot=False,
-        save_solution_data=False,
-    )
-
-    solver_options = {
-        "verbose": False,
-        "ipopt.print_level": 0,
-        "ipopt.max_iter": 1000,
-        "expand": True,
-    }
-
-    predictors = [wb_T_vent, wb_T_cabin, wb_CO2]
-    mpc.nlp.build(solver_options=solver_options, predictors=predictors)
-
-    return mpc
-
-
 class SOCAwareMPCWrapper:
     """
-    Wrapper that checks SOC forecast and switches between comfort/energy-saving MPCs.
+    Wrapper that checks the SOC forecast and switches between a comfort-mode
+    and an energy-saving-mode MPC (two NLPs with different objective weights,
+    both built by the shared mpc_builder).
 
-    This implements anticipation: if SOC will drop below threshold within the
-    20-minute horizon, switch to energy-saving mode BEFORE it happens.
+    This implements anticipation: if the SOC will drop below the threshold
+    within the 20-minute horizon, the wrapper switches to energy-saving mode
+    BEFORE the threshold is actually crossed.
 
-    Key insight: Different COST FUNCTIONS for each mode:
-    - Comfort mode: Quadratic(target=22°C) → tight tracking, no energy penalty
-    - Saving mode:  BandViolation[20,24°C] + high energy penalty → allows drift
+    Mode weight sets (from ScenarioConfig):
+    - Comfort mode: config.weights          (high w_T, small energy terms)
+    - Saving mode:  config.weights_saving   (w_T reduced ~200x, energy dominates)
     """
 
     def __init__(self, config: ScenarioConfig):
         self.config = config
         self.threshold = config.soc_threshold
 
-        # Build both MPCs with different cost structures
-        print(f"  Building MPC for COMFORT mode (Quadratic targeting 22°C)...")
-        self.mpc_comfort = build_mpc_comfort_mode(config)
-        print(f"  Building MPC for ENERGY-SAVING mode (BandViolation [20,24°C])...")
-        self.mpc_saving = build_mpc_saving_mode(config)
+        # Build both MPCs with different objective weights
+        print(f"  Building MPC for COMFORT mode (weights: {config.weights})...")
+        self.mpc_comfort = build_mpc_from_config(config)
+        print(f"  Building MPC for ENERGY-SAVING mode (weights: {config.weights_saving})...")
+        self.mpc_saving = build_mpc_from_config(config, weight_overrides=config.weights_saving)
 
         self.current_mode = 'comfort'  # Track which MPC is active
         self.mode_switches = []  # Track when mode switches happen
@@ -358,10 +223,14 @@ def compute_metrics(df: pd.DataFrame, config: ScenarioConfig) -> dict:
     deviations = deviations.clip(lower=0)  # Only positive violations
     metrics['comfort_violation_Kmin'] = deviations.sum()  # K*min (1-min steps)
 
-    # Energy consumption
+    # Energy consumption (HP + PTC + blower fan)
     if 'hvac_power' in df.columns:
         P_hvac = df['hvac_power']
         metrics['energy_total_Wh'] = P_hvac.sum() * 60 / 3600  # Assuming 1-min steps
+        if 'hp_power' in df.columns:
+            metrics['energy_hp_Wh'] = df['hp_power'].sum() * 60 / 3600
+        if 'blower_power' in df.columns:
+            metrics['energy_blower_Wh'] = df['blower_power'].sum() * 60 / 3600
 
         # Energy before threshold (t < 60min)
         metrics['energy_before_threshold_Wh'] = P_hvac.iloc[:threshold_time_min].sum() * 60 / 3600

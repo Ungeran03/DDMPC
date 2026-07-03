@@ -82,7 +82,9 @@ class RobotaxiCabinSimulator(System):
             f_solar_air: float = 0.3,        # Fraction of solar to air directly
             f_solar_mass: float = 0.7,       # Fraction of solar absorbed by mass
             # HVAC duct parameters (T_vent node)
-            C_hvac: float = 100.0,           # HVAC duct thermal capacity [J/K]
+            C_hvac: float = 5000.0,          # HVAC duct thermal capacity [J/K]
+            #   NOTE: values below ~2000 J/K make the 1s sub-stepped Euler
+            #   integration unstable (dT_vent explodes). Keep >= 5000.
             # Heat Pump parameters
             Q_hp_max_cool: float = 5000.0,   # Max HP cooling power [W]
             Q_hp_max_heat: float = 4000.0,   # Max HP heating power [W]
@@ -96,6 +98,8 @@ class RobotaxiCabinSimulator(System):
             m_dot_blower_max: float = 0.08,  # Max blower mass flow rate [kg/s]
             c_p_air: float = 1005.0,         # Specific heat of air [J/(kg*K)]
             min_fresh_frac: float = 0.1,     # Min fresh air fraction even at full recirc [-]
+            P_blower_max: float = 300.0,     # Blower electrical power at u_blower=1 [W]
+            #   Fan affinity law: P_blower = P_blower_max * u_blower^3
             # Vent temperature limits (physical constraints)
             T_vent_min: float = 278.15,      # Min vent temp [K] (5°C) - evaporator icing limit
             T_vent_max: float = 338.15,      # Max vent temp [K] (65°C) - safety/comfort limit
@@ -152,6 +156,7 @@ class RobotaxiCabinSimulator(System):
         self.m_dot_blower_max = m_dot_blower_max
         self.c_p_air = c_p_air
         self.min_fresh_frac = min_fresh_frac
+        self.P_blower_max = P_blower_max
 
         # Vent temperature limits
         self.T_vent_min = T_vent_min
@@ -191,8 +196,9 @@ class RobotaxiCabinSimulator(System):
         self.scenario = None
 
         # Energy tracking
-        self.E_hp_total = 0.0   # Total HP electrical energy [J]
-        self.E_ptc_total = 0.0  # Total PTC electrical energy [J]
+        self.E_hp_total = 0.0      # Total HP electrical energy [J]
+        self.E_ptc_total = 0.0     # Total PTC electrical energy [J]
+        self.E_blower_total = 0.0  # Total blower electrical energy [J]
 
     def setup(self, start_time: int, scenario: str = 'summer_city', hvac_mode: str = None,
               duration: int = 4 * 3600, seed: int = None,
@@ -224,6 +230,14 @@ class RobotaxiCabinSimulator(System):
         self.E_hp_total = 0.0
         self.E_ptc_total = 0.0
         self.E_blower_total = 0.0
+
+        # Reset last-step telemetry (otherwise the first read() after a
+        # re-setup reports stale power values from the previous run)
+        self._last_P_hp = 0.0
+        self._last_P_ptc = 0.0
+        self._last_P_blower = 0.0
+        self._last_Q_hp = 0.0
+        self._ptc_externally_controlled = False
 
         # Store external profile overrides (for deterministic paper scenarios)
         self._profile_overrides = profile_overrides or {}
@@ -393,9 +407,13 @@ class RobotaxiCabinSimulator(System):
                 self.u_ptc = self.u_hvac
             P_ptc_elec = self.u_ptc * self.Q_ptc_max
 
+        # 7. Blower fan electrical power (fan affinity law: P ~ u^3)
+        P_blower_elec = self.P_blower_max * self.u_blower ** 3
+
         # Track energy consumption
         self.E_hp_total += P_hp_elec * self.step_size
         self.E_ptc_total += P_ptc_elec * self.step_size
+        self.E_blower_total += P_blower_elec * self.step_size
 
         # =====================================================================
         # Sub-stepped Euler integration for fast dynamics (T_ptc, T_vent)
@@ -452,6 +470,7 @@ class RobotaxiCabinSimulator(System):
         # Store for read()
         self._last_P_hp = P_hp_elec
         self._last_P_ptc = P_ptc_elec
+        self._last_P_blower = P_blower_elec
         self._last_Q_hp = Q_hp
         self._last_Q_ptc_to_vent = Q_ptc_to_vent
         self._last_Q_from_hvac = Q_from_hvac
@@ -465,8 +484,9 @@ class RobotaxiCabinSimulator(System):
         """Read current state and disturbances."""
         dist = self._get_disturbances(self.time)
 
-        # Total HVAC electrical power
-        P_hvac_total = getattr(self, '_last_P_hp', 0) + getattr(self, '_last_P_ptc', 0)
+        # Total HVAC electrical power (heat pump + PTC + blower fan)
+        P_blower = getattr(self, '_last_P_blower', self.P_blower_max * self.u_blower ** 3)
+        P_hvac_total = getattr(self, '_last_P_hp', 0) + getattr(self, '_last_P_ptc', 0) + P_blower
 
         # Fresh air flow calculation
         fresh_frac = max(self.min_fresh_frac, 1 - self.u_recirc)
@@ -498,6 +518,7 @@ class RobotaxiCabinSimulator(System):
             'battery_power_hvac': P_hvac_total,
             'hp_power': getattr(self, '_last_P_hp', 0),
             'ptc_power': getattr(self, '_last_P_ptc', 0),
+            'blower_power': P_blower,
             'hvac_mode': 1 if self.mode == 'cooling' else (-1 if 'heating' in self.mode else 0),
             'cop': getattr(self, '_last_COP', 1.0),
             'fresh_air_flow': m_dot_fresh,
@@ -861,4 +882,5 @@ class RobotaxiCabinSimulator(System):
         if self.E_hp_total > 0 or self.E_ptc_total > 0:
             print(f"  Total HP energy: {self.E_hp_total / 3600:.1f} Wh")
             print(f"  Total PTC energy: {self.E_ptc_total / 3600:.1f} Wh")
+            print(f"  Total blower energy: {self.E_blower_total / 3600:.1f} Wh")
         print("=" * 50)

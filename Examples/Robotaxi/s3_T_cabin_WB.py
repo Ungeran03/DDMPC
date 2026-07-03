@@ -75,22 +75,32 @@ def create_whitebox_T_ptc() -> WhiteBox:
     Energy balance (PTC element):
         C_ptc * dT_ptc/dt = u_ptc * Q_ptc_max - h_ptc * (T_ptc - T_vent)
 
-    The PTC heats up when u_ptc > 0 and transfers heat to T_vent via
-    convection coefficient h_ptc.
+    NOTE: The element time constant is tau = C_ptc/h_ptc = 7.5 s, far below
+    the 60 s MPC sample time. An explicit Euler step at dt=60 s has the
+    discrete eigenvalue 1 - h_ptc*dt/C_ptc = -7 and diverges violently
+    (this made the NLP unsolvable when this predictor was included).
+    We therefore use the EXACT discretization of the linear ODE, which is
+    unconditionally stable:
+
+        T_ptc[k+1] = T_vent + (T_ptc - T_vent)*exp(-dt/tau)
+                     + (u_ptc*Q_ptc_max/h_ptc)*(1 - exp(-dt/tau))
+
+    In practice exp(-60/7.5) ~ 3e-4, i.e. the element is quasi-stationary at
+    the control time scale. The cooling-mode T_vent predictor therefore does
+    not use T_ptc at all, and the heating-mode predictor injects the PTC
+    power directly (quasi-steady). This predictor is kept for completeness
+    and diagnostics only.
     """
 
     T_p = T_ptc_elem.source[0]
     T_v = T_vent.source[0]
     u_p = u_ptc.source[0]
 
-    # PTC electrical power
-    P_ptc = u_p * Q_ptc_max
+    import numpy as np
+    decay = float(np.exp(-h_ptc * dt / C_ptc))  # exp(-dt/tau), ~3e-4
 
-    # Heat transfer to vent air
-    Q_ptc_to_vent = h_ptc * (T_p - T_v)
-
-    # Temperature change
-    dT_ptc = (dt / C_ptc) * (P_ptc - Q_ptc_to_vent)
+    T_ptc_next = T_v + (T_p - T_v) * decay + (u_p * Q_ptc_max / h_ptc) * (1 - decay)
+    dT_ptc = T_ptc_next - T_p
 
     wb = WhiteBox(
         inputs=[
@@ -114,16 +124,28 @@ def create_whitebox_T_vent(hvac_mode: str = 'cooling') -> WhiteBox:
     WhiteBox predictor for HVAC duct air temperature change.
 
     Energy balance (HVAC duct):
-        C_hvac * dT_vent/dt = Q_hp + h_ptc*(T_ptc - T_vent) - m_dot*c_p*(T_vent - T_inlet)
+        C_hvac * dT_vent/dt = Q_hp + Q_ptc - m_dot*c_p*(T_vent - T_inlet)
 
     where T_inlet = fresh_frac * T_amb + (1 - fresh_frac) * T_cabin
 
-    Heat sources: HP and PTC element
-    Heat sink: air flow to cabin
+    Design decisions (match cabin_simulator.py physics):
+    - Q_hp is gated by u_blower, exactly like the simulator: without air
+      flow across the heat exchanger no heat is transferred to the duct air.
+    - The PTC element state T_ptc is NOT an input. Its time constant
+      (tau = C_ptc/h_ptc = 7.5 s) is far below the 60 s sample time, so the
+      element is quasi-stationary: all PTC electrical power reaches the duct
+      within one step (Q_ptc = u_ptc * Q_ptc_max). Including T_ptc as a
+      predicted state made the NLP numerically unstable (explicit Euler
+      eigenvalue -7); including it WITHOUT a predictor left it as a free
+      optimization variable that the solver exploited as an unphysical
+      200 W/K heat source/sink.
+    - Heating mode: Q_hp_max_heat is max THERMAL power. The COP only maps
+      thermal to electrical power (energy cost), it must NOT amplify the
+      thermal output (this bug was fixed in the simulator earlier and is
+      now also fixed here).
     """
 
     T_v = T_vent.source[0]
-    T_p = T_ptc_elem.source[0]
     T_cab = T_cabin.source[0]
     T_amb = T_ambient.source[0]
     u = u_hvac.source[0]
@@ -131,8 +153,13 @@ def create_whitebox_T_vent(hvac_mode: str = 'cooling') -> WhiteBox:
     u_rec = u_recirc.source[0]
     v = v_vehicle.source[0]
 
-    # Fresh air fraction with minimum guarantee
-    fresh_frac = ca.fmax(min_fresh_frac, 1 - u_rec)
+    # Fresh air fraction. The simulator floors this at min_fresh_frac via
+    # max(0.1, 1-u_recirc); the MPC instead enforces u_recirc <= 0.9 as a box
+    # constraint, which is equivalent within the admissible range but keeps
+    # the expression SMOOTH. (The former ca.fmax() kink at u_recirc = 0.9 is
+    # exactly where the energy-optimal solution sits, and IPOPT stalled on
+    # the non-differentiable point.)
+    fresh_frac = 1 - u_rec
 
     # Inlet temperature (mixed air entering HVAC)
     T_inlet = fresh_frac * T_amb + (1 - fresh_frac) * T_cab
@@ -144,36 +171,37 @@ def create_whitebox_T_vent(hvac_mode: str = 'cooling') -> WhiteBox:
     v_ref = 15.0
     eta_radiator = 0.5 + 0.5 * (1 - ca.exp(-v / v_ref))
 
-    # Heat pump thermal power
-    if hvac_mode == 'cooling':
-        # Cooling: HP removes heat from duct (negative Q)
-        Q_hp = -u * Q_hp_max_cool * eta_radiator
-    else:
-        # Heating: HP adds heat to duct (positive Q with COP)
-        COP_base = 3.0
-        COP_eff = COP_base * (1 + alpha_plr * (1 - u))
-        Q_hp = u * Q_hp_max_heat * eta_radiator * COP_eff
+    # Heat pump thermal power (blower-gated, like the simulator)
+    inputs = [
+        T_vent.source,
+        T_cabin.source,
+        T_ambient.source,
+        u_hvac.source,
+        u_blower.source,
+        u_recirc.source,
+        v_vehicle.source,
+    ]
 
-    # Heat from PTC element
-    Q_from_ptc = h_ptc * (T_p - T_v)
+    if hvac_mode == 'cooling':
+        # Cooling: HP removes heat from duct (negative Q). PTC inactive.
+        Q_hp = -u * u_bl * Q_hp_max_cool * eta_radiator
+        Q_ptc = 0.0
+    else:
+        # Heating: Q_hp_max_heat is THERMAL power (no COP amplification!)
+        Q_hp = u * u_bl * Q_hp_max_heat * eta_radiator
+        # PTC quasi-steady: element passes its full power to the duct
+        u_p = u_ptc.source[0]
+        Q_ptc = u_p * Q_ptc_max
+        inputs.append(u_ptc.source)
 
     # Heat transported to cabin
     Q_to_cabin = m_dot * c_p_air * (T_v - T_inlet)
 
     # Temperature change
-    dT_vent = (dt / C_hvac) * (Q_hp + Q_from_ptc - Q_to_cabin)
+    dT_vent = (dt / C_hvac) * (Q_hp + Q_ptc - Q_to_cabin)
 
     wb = WhiteBox(
-        inputs=[
-            T_vent.source,
-            T_ptc_elem.source,
-            T_cabin.source,
-            T_ambient.source,
-            u_hvac.source,
-            u_blower.source,
-            u_recirc.source,
-            v_vehicle.source,
-        ],
+        inputs=inputs,
         output=T_vent_change,
         output_expression=dT_vent,
         step_size=dt,
@@ -279,8 +307,10 @@ def create_whitebox_CO2() -> WhiteBox:
     u_bl = u_blower.source[0]
     u_rec = u_recirc.source[0]
 
-    # Fresh air volumetric flow (scaled by blower, min fresh air guarantee)
-    fresh_frac = ca.fmax(min_fresh_frac, 1 - u_rec)
+    # Fresh air volumetric flow (scaled by blower). Smooth expression;
+    # the min-fresh-air guarantee is enforced via u_recirc <= 0.9 in the MPC
+    # (see create_whitebox_T_vent for rationale).
+    fresh_frac = 1 - u_rec
     m_dot_fresh = m_dot_blower_max * u_bl * fresh_frac
     Q_vol_fresh = m_dot_fresh / rho_air
 

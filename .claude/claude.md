@@ -10,6 +10,28 @@
 
 ## Robotaxi Cabin Climate Control Extension
 
+> **⚠️ MODEL REVISION JULY 2026 — supersedes all older numbers/formulations below.**
+> The MPC NLP and physics model were fixed and all paper scenarios re-run.
+> Authoritative reference: `Examples/Robotaxi/paper_revision_notes.md` and the
+> regenerated `s*_results.json` files. Key changes:
+>
+> 1. **Reduced MPC model** (`mpc_builder.py`, shared by all scenarios): previously
+>    `Model(*Feature.all)` left T_ptc/T_mass/P_hvac as FREE optimization variables;
+>    the solver exploited free T_ptc as an unphysical heat sink (PTC at −19 °C in
+>    horizon solutions) and many IPOPT solves hit the iteration limit.
+> 2. **Blower fan power modeled**: `P_blower = 300 W · u_blower³` in the simulator,
+>    counted in all energy metrics; the MPC has energy terms on u_hvac AND u_blower.
+> 3. **Predictor fixes**: cooling T_vent WhiteBox has no T_ptc input (quasi-stationary
+>    PTC), Q_hp blower-gated like the simulator, heating COP bug fixed, smooth
+>    `fresh_frac = 1 − u_recirc` with `u_recirc ≤ 0.9` box constraint (the old
+>    `ca.fmax` kink stalled IPOPT), T_vent constrained to [5, 65] °C.
+> 4. **New headline results** (100 % IPOPT convergence): S1 **38 %**, S2 **56 %**,
+>    S3 **51 %** energy savings vs PID — with fan power included and equal comfort
+>    tracking in S1/S2; S3 drifts to 25.1 °C by design (graceful degradation).
+> 5. Objective = quadratic tracking of 22 °C + CO2 penalty above 800 ppm +
+>    u_hvac²/u_blower² energy terms + Δu smoothness (NOT a dead-band objective;
+>    the paper's Eq. 14/15/17 must be rewritten accordingly).
+
 A new example demonstrates **MPC for autonomous robotaxi cabin climate control**. The key advantage of a robotaxi over a conventional vehicle is **full forecast availability**: the robotaxi knows its upcoming bookings (passengers), route (velocity, heading), and battery state (SOC). MPC can exploit this knowledge; a PID controller cannot.
 
 ### Why MPC for Robotaxis?
@@ -635,13 +657,15 @@ t=120min: SOC=0%    End — MPC used 70% less energy than PID
 
 ### Paper Scenarios Summary
 
-| Scenario | Forecast Used | MPC Advantage | Energy Savings | Comfort Tracking |
-|----------|---------------|---------------|----------------|------------------|
-| **S1: Pre-Conditioning** | n_passengers | PLR-COP + u_recirc + u_blower coordination | **51%** | MPC equal to PID (22.3 vs 22.4°C @ board) |
-| **S2: Highway Anticipation** | v_vehicle | Defers cooling to high-eta_rad highway phase | **65%** | MPC equal to PID (T_mean 22.4 vs 23.8°C) |
-| **S3: SOC Relaxation** | soc (stage param) | Conscious comfort drift after SOC threshold | **70%** | MPC drifts to 24.9°C (intended) |
+**Numbers below updated per July 2026 model revision (fan power included, all IPOPT solves converge):**
 
-**Key Takeaway:** In S1 and S2, MPC saves 51–65% **at equal-or-better comfort tracking** — the savings are *not* from running warmer, but from genuine MPC-only mechanisms (multi-MV coordination, PLR-COP exploitation, eta_rad timing). In S3, the SOC stage parameter explicitly authorizes comfort drift; the visible knee at t≈40 min is the showcase plot.
+| Scenario | Forecast Used | MPC Advantage | PID [Wh] | MPC [Wh] | Energy Savings | Comfort Tracking |
+|----------|---------------|---------------|----------|----------|----------------|------------------|
+| **S1: Pre-Conditioning** | n_passengers | PLR-COP + u_recirc + u_blower coordination | 446 | 275 | **38%** | equal (22.2 vs 22.4°C @ board), overshoot −66%, CO2max −19% |
+| **S2: Highway Anticipation** | v_vehicle | Partial-load regime enabled by eta_rad forecast | 572 | 255 | **56%** | equal (T_mean 22.5 vs 22.5°C) |
+| **S3: SOC Relaxation** | soc (mode switch) | Conscious comfort drift after SOC threshold | 1866 | 916 | **51%** | MPC drifts to 25.1°C (intended), 66 K·min violation |
+
+**Key Takeaway:** In S1 and S2, MPC saves 38–56% **at equal comfort tracking** — with blower fan power honestly counted (the MPC actually spends MORE fan energy than PID in all scenarios: high airflow lets the compressor run at partial load where COP is best; HP energy drops 49–65%). In S3, the SOC-triggered weight switch authorizes comfort drift; the visible knee at t≈41 min is the showcase plot.
 
 Each scenario demonstrates a distinct MPC capability:
 
@@ -801,59 +825,50 @@ print(f"Energy savings: {savings_pct:.1f}%")
 | T_cabin | Soft | [20, 24]°C | Comfort band (no penalty inside) |
 | u_blower | Box | ≥ 0.1 | Minimum ventilation |
 
-### MPC Objective Formulation
-
-The MPC uses a multi-objective cost function with the following structure:
+### MPC Objective Formulation (as implemented in `mpc_builder.py`, July 2026)
 
 ```
 J = Σ_k [
-    # Temperature: Band violation penalty [20, 24]°C
-    w_T × (1 + α_pass × n_pass) × (max(0, T - T_ub)² + max(0, T_lb - T)²)
+    # Temperature: quadratic tracking of 22°C target (Steady mode epsilons)
+    w_T × (T_cabin - 295.15)²
 
-    # CO2: Soft target at 800 ppm (no penalty below)
-    + w_CO2 × max(0, CO2 - 800)²
+    # CO2: penalty above 800 ppm soft target (Economic mode [400, 800] epsilons)
+    + w_CO2 × (max(0, CO2 - 800) / 100)²
 
-    # Energy: Approximated electrical power
-    + w_E × (u_hvac × Q_hp_max/COP_nom + u_ptc × Q_ptc_max)²
+    # Energy: HP and blower fan electrical effort (separate quadratic terms)
+    + w_E_hvac × u_hvac²
+    + w_E_blower × u_blower²
 
     # Smoothness: Control change penalties
     + w_du_hvac × Δu_hvac²
-    + w_du_ptc × Δu_ptc²
     + w_du_blower × Δu_blower²
     + w_du_recirc × Δu_recirc²
 ]
+s.t.  0 ≤ u_hvac ≤ 1,  0.1 ≤ u_blower ≤ 1,  0 ≤ u_recirc ≤ 0.9,
+      CO2 ≤ 1200 ppm,  278.15 K ≤ T_vent ≤ 338.15 K
 ```
 
 **Key Design Decisions:**
 
-1. **Temperature Band [20, 24]°C**: No penalty inside the band → MPC can optimize for energy. Quadratic penalty outside → fast correction.
+1. **Quadratic tracking at 22°C** (NOT a dead-band): keeps the "equal comfort" story clean in S1/S2 — savings come from actuator coordination, not from running warmer.
 
-2. **Passenger-Dependent Comfort Weight**: More passengers = higher comfort priority.
-   ```
-   w_comfort_eff = w_comfort_base × (1 + 0.5 × n_passengers)
-   ```
-   | n_pass | w_eff |
-   |--------|-------|
-   | 0 | 1.0 × w_base (empty taxi, energy priority) |
-   | 2 | 2.0 × w_base |
-   | 4 | 3.0 × w_base (full taxi, comfort priority) |
+2. **CO2 Two-Stage**: Soft target 800 ppm (via `C_CO2_economic` band) + hard limit 1200 ppm. Below 800: no penalty → save ventilation energy.
 
-3. **CO2 Two-Stage**: Soft target 800 ppm + hard limit 1200 ppm. Below 800: no penalty → save ventilation energy.
+3. **Separate energy terms for HP and blower**: the plant charges `P_blower = 300 W × u_blower³`; the MPC trades fan power against compressor partial-load COP. Result: blower rides at 0.7-1.0 with u_hvac ≈ 0.4-0.6 instead of the PID's saturated u_hvac = 1.
 
-4. **Energy Approximation**: Uses `P ≈ u × Q_max / COP_nom` which automatically prefers heat pump (COP~2.5) over PTC (COP=1.0).
+4. **u_recirc ≤ 0.9 box constraint** replaces the kinked `max(0.1, 1-u_recirc)` in the predictor (equivalent within range, keeps the NLP smooth — IPOPT stalled on the fmax kink).
 
-**Default Weights:**
+5. **No passenger-dependent comfort weight** (was documented but never implemented; removed from the paper).
 
-| Weight | Value | Description |
-|--------|-------|-------------|
-| w_T | 100 | Temperature band violation |
-| α_pass | 0.5 | Passenger scaling factor |
-| w_CO2 | 50 | CO2 above 800 ppm |
-| w_E | 0.001 | Energy (scaled for Watts) |
-| w_du_hvac | 10 | HVAC smoothness |
-| w_du_ptc | 10 | PTC smoothness |
-| w_du_blower | 5 | Blower smoothness |
-| w_du_recirc | 5 | Recirc smoothness |
+**Weights per scenario** (see `scenario_config.py`):
+
+| Weight | S1 | S2 | S3 comfort | S3 saving |
+|--------|-----|-----|------------|-----------|
+| w_T | 5000 | 5000 | 1000 | 2 |
+| w_CO2 | 30 | 50 | 30 | 10 |
+| w_E_hvac | 100 | 100 | 50 | 400 |
+| w_E_blower | 100 | 100 | 50 | 100 |
+| w_du (hvac/blower/recirc) | 10/5/5 | 10/5/5 | 10/5/5 | 10/5/5 |
 
 ### Key Physical Couplings
 

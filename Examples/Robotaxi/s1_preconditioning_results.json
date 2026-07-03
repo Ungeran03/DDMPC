@@ -1,7 +1,7 @@
 {
   "scenario": "preconditioning",
   "description": "Pre-Conditioning Before Passenger Boarding",
-  "timestamp": "2026-05-08T21:25:58.673109",
+  "timestamp": "2026-07-02T21:14:55.415154",
   "config": {
     "duration_hours": 0.5,
     "hvac_mode": "cooling",
@@ -9,10 +9,9 @@
     "T_mass_init_C": 30.0,
     "weights": {
       "T_cabin": 5000.0,
-      "T_vent": 0.0,
-      "T_ptc": 0.0,
       "C_CO2": 30.0,
-      "energy": 0.0
+      "energy_hvac": 100.0,
+      "energy_blower": 100.0
     }
   },
   "metrics": {
@@ -23,20 +22,24 @@
       "T_mean_C": 22.884202180012096,
       "CO2_max": 1005.1729597354147,
       "CO2_mean": 739.5576871243925,
-      "energy_total_Wh": 366.7133678233004,
-      "energy_preconditioning_Wh": 75.86946551485636,
+      "energy_total_Wh": 445.7235717719484,
+      "energy_hp_Wh": 366.7133678233004,
+      "energy_blower_Wh": 79.01020394864796,
+      "energy_preconditioning_Wh": 103.14583241583532,
       "time_in_band_pct": 86.66666666666667
     },
     "MPC": {
-      "T_at_boarding_C": 22.337020092556884,
+      "T_at_boarding_C": 22.229586286835286,
       "CO2_at_boarding": 420.0,
-      "T_overshoot_K": 0.39157454309344075,
-      "T_mean_C": 23.053808891311235,
-      "CO2_max": 920.9037375683595,
-      "CO2_mean": 698.64282536604,
-      "energy_total_Wh": 179.82223499546572,
-      "energy_preconditioning_Wh": 67.0751384656611,
-      "time_in_band_pct": 83.33333333333334
+      "T_overshoot_K": 0.24157865170576542,
+      "T_mean_C": 23.085469390189132,
+      "CO2_max": 814.7933175332921,
+      "CO2_mean": 680.2928469338518,
+      "energy_total_Wh": 275.05435350675265,
+      "energy_hp_Wh": 185.58555198603517,
+      "energy_blower_Wh": 89.46880152071746,
+      "energy_preconditioning_Wh": 69.94696636009616,
+      "time_in_band_pct": 80.0
     }
   }
 }

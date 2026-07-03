@@ -95,16 +95,19 @@ class ScenarioConfig:
         'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
         'u_ptc': MVConfig(active=False, lb=0, ub=1, weight_change=10),
         'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
-        'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
+        'u_recirc': MVConfig(active=True, lb=0, ub=0.9, weight_change=5),  # ub=0.9: min 10% fresh air (smooth predictor)
     })
 
-    # MPC weights (base values, T_cabin scaled by passengers)
+    # MPC objective weights (see mpc_builder.py for the exact formulation):
+    #   T_cabin       - quadratic tracking of the 22C target [1/K^2]
+    #   C_CO2         - quadratic penalty above 800 ppm soft target [1/(100ppm)^2]
+    #   energy_hvac   - quadratic penalty on u_hvac (HP electrical energy)
+    #   energy_blower - quadratic penalty on u_blower (fan electrical energy)
     weights: Dict[str, float] = field(default_factory=lambda: {
-        'T_cabin': 100.0,      # Band violation penalty
-        'T_vent': 1.0,         # Intermediate state tracking
-        'T_ptc': 0.1,          # PTC element tracking
-        'C_CO2': 50.0,         # CO2 above soft target
-        'energy': 0.001,       # Energy penalty (scaled for Watts)
+        'T_cabin': 1000.0,
+        'C_CO2': 30.0,
+        'energy_hvac': 100.0,
+        'energy_blower': 100.0,
     })
 
     # Temperature comfort band [K] - no penalty inside this band
@@ -120,14 +123,16 @@ class ScenarioConfig:
     CO2_limit: float = 1200.0        # Hard constraint [ppm]
 
     # SOC-dependent comfort relaxation (Scenario 3)
-    # When soc < threshold: w_comfort = w_base * low_weight_factor
+    # When min(SOC) in the prediction horizon < threshold, the MPC switches
+    # from `weights` (comfort mode) to `weights_saving` (energy-saving mode).
     soc_threshold: float = 0.1       # 10% - below this, relax comfort
-    soc_low_weight_factor: float = 0.2  # 20% of base weight when soc < threshold
+    weights_saving: Optional[Dict[str, float]] = None  # S3 saving-mode weights
 
     # Energy approximation parameters
-    Q_hp_max: float = 5000.0    # Max HP power [W] (cooling or heating)
-    Q_ptc_max: float = 6000.0   # Max PTC power [W]
-    COP_nominal: float = 2.5    # Nominal COP for energy approximation
+    Q_hp_max: float = 5000.0       # Max HP power [W] (cooling or heating)
+    Q_ptc_max: float = 6000.0      # Max PTC power [W]
+    COP_nominal: float = 2.5       # Nominal COP for energy approximation
+    P_blower_max: float = 300.0    # Blower electrical power at u_blower=1 [W]
 
     # Disturbance profiles (None = use scenario defaults)
     profile_T_ambient: Optional[Callable[[float], float]] = None
@@ -191,7 +196,8 @@ class ScenarioConfig:
         print(f"  Temperature band: [{self.T_comfort_lb - 273.15:.0f}, {self.T_comfort_ub - 273.15:.0f}]°C")
         print(f"  Passenger scaling: w_eff = w_base × (1 + {self.alpha_passenger} × n_pass)")
         print(f"  CO2 soft target: {self.CO2_soft_target:.0f} ppm")
-        print(f"  Weights: T={self.weights.get('T_cabin', 0)}, CO2={self.weights.get('C_CO2', 0)}, E={self.weights.get('energy', 0)}")
+        print(f"  Weights: T={self.weights.get('T_cabin', 0)}, CO2={self.weights.get('C_CO2', 0)}, "
+              f"E_hvac={self.weights.get('energy_hvac', 0)}, E_blower={self.weights.get('energy_blower', 0)}")
         print(f"\nConstraints:")
         print(f"  CO2 hard limit: {self.CO2_limit} ppm")
         print(f"\nExternal Profiles:")
@@ -288,18 +294,17 @@ def preconditioning_scenario() -> ScenarioConfig:
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
             'u_ptc': MVConfig(active=False),  # Summer, not needed
             'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
-            'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
+            'u_recirc': MVConfig(active=True, lb=0, ub=0.9, weight_change=5),  # ub=0.9: min 10% fresh air (smooth predictor)
         },
 
-        # MPC objective weights: comfort dominates, no explicit energy penalty.
-        # Energy savings emerge from multi-MV coordination (u_blower, u_recirc)
-        # and PLR-COP exploitation, NOT from drifting away from target.
+        # MPC objective weights: comfort dominates; the energy terms let the
+        # MPC find the efficient u_hvac/u_blower split now that fan power is
+        # part of the plant model (P_blower = P_max * u_blower^3).
         weights={
-            'T_cabin': 5000.0,     # Very high: MPC tracks target tightly
-            'T_vent': 0.0,         # Disabled: T_vent target 22C conflicts with cooling
-            'T_ptc': 0.0,
-            'C_CO2': 30.0,         # Moderate CO2 weight
-            'energy': 0.0,         # No explicit energy penalty
+            'T_cabin': 5000.0,       # Very high: MPC tracks target tightly
+            'C_CO2': 30.0,           # Moderate CO2 weight
+            'energy_hvac': 100.0,    # HP electrical energy
+            'energy_blower': 100.0,  # Blower fan electrical energy
         },
 
         # Temperature comfort band
@@ -406,15 +411,14 @@ def highway_anticipation_scenario() -> ScenarioConfig:
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
             'u_ptc': MVConfig(active=False),
             'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
-            'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
+            'u_recirc': MVConfig(active=True, lb=0, ub=0.9, weight_change=5),  # ub=0.9: min 10% fresh air (smooth predictor)
         },
 
         weights={
-            'T_cabin': 5000.0,  # Very high: MPC tracks target tightly
-            'T_vent': 0.0,      # Disabled: target 22C conflicts with cooling
-            'T_ptc': 0.0,
+            'T_cabin': 5000.0,       # Very high: MPC tracks target tightly
             'C_CO2': 50.0,
-            'energy': 0.0,      # No explicit energy penalty; savings from PLR-COP and eta_rad
+            'energy_hvac': 100.0,    # HP electrical energy
+            'energy_blower': 100.0,  # Blower fan electrical energy
         },
 
         profile_T_ambient=ambient_profile,
@@ -497,7 +501,7 @@ def peak_shaving_scenario() -> ScenarioConfig:
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
             'u_ptc': MVConfig(active=False),
             'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
-            'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
+            'u_recirc': MVConfig(active=True, lb=0, ub=0.9, weight_change=5),  # ub=0.9: min 10% fresh air (smooth predictor)
         },
 
         weights={
@@ -582,7 +586,7 @@ def co2_management_scenario() -> ScenarioConfig:
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
             'u_ptc': MVConfig(active=False),
             'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
-            'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
+            'u_recirc': MVConfig(active=True, lb=0, ub=0.9, weight_change=5),  # ub=0.9: min 10% fresh air (smooth predictor)
         },
 
         weights={
@@ -683,23 +687,30 @@ def soc_relaxation_scenario() -> ScenarioConfig:
             'u_hvac': MVConfig(active=True, lb=0, ub=1, weight_change=10),
             'u_ptc': MVConfig(active=False),  # Summer, not needed
             'u_blower': MVConfig(active=True, lb=0.1, ub=1, weight_change=5),
-            'u_recirc': MVConfig(active=True, lb=0, ub=1, weight_change=5),
+            'u_recirc': MVConfig(active=True, lb=0, ub=0.9, weight_change=5),  # ub=0.9: min 10% fresh air (smooth predictor)
         },
 
-        # Base weights - T_cabin weight gets scaled by SOC in MPC
-        # High comfort weight forces tight control initially
-        # When SOC drops, MPC switches to low weight and relaxes
+        # COMFORT mode weights (SOC healthy): strict tracking, small energy terms
         weights={
-            'T_cabin': 5000.0,  # High weight: strict temperature control
-            'T_vent': 1.0,
-            'T_ptc': 0.0,
+            'T_cabin': 1000.0,      # Strict temperature control
             'C_CO2': 30.0,
-            'energy': 0.0001,  # Low energy penalty (comfort dominates initially)
+            'energy_hvac': 50.0,
+            'energy_blower': 50.0,
+        },
+
+        # SAVING mode weights (min SOC in horizon < threshold): the comfort
+        # weight is strongly reduced and energy dominates -> graceful
+        # degradation, cabin drifts toward the upper comfort band (~25C).
+        # Steady-state drift ~ w_E,hvac * du^2/dT / (2 * w_T) ~ 2.5-3 K.
+        weights_saving={
+            'T_cabin': 2.0,
+            'C_CO2': 10.0,
+            'energy_hvac': 400.0,
+            'energy_blower': 100.0,
         },
 
         # SOC threshold for comfort relaxation
         soc_threshold=0.1,  # 10%
-        soc_low_weight_factor=0.02,  # w_comfort = 2% of w_base when soc < threshold (5000 -> 100)
 
         profile_T_ambient=ambient_profile,
         profile_solar=solar_profile,

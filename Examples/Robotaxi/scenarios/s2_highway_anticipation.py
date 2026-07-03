@@ -29,15 +29,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from configuration import *
 from scenario_config import highway_anticipation_scenario, ScenarioConfig, MVConfig
-from s3_T_cabin_WB import (
-    create_whitebox_T_ptc,
-    create_whitebox_T_vent,
-    create_whitebox_T_cabin,
-    create_whitebox_CO2,
-)
+from mpc_builder import build_mpc_from_config
 from controllers import FixedPID, BlowerPI, PTCRelay
-from ddmpc.controller.model_predictive.nlp import NLP, Objective, Constraint
-from ddmpc.controller.model_predictive.costs import Quadratic
 
 import numpy as np
 import pandas as pd
@@ -100,115 +93,15 @@ def save_results(metrics_all: dict, config: ScenarioConfig, dataframes: dict = N
                 'n_passengers': df['passenger_count'] if 'passenger_count' in df.columns else np.nan,
                 'v_vehicle_m_s': df['vehicle_speed'] if 'vehicle_speed' in df.columns else np.nan,
                 'solar_W_m2': df['solar_irradiance'] if 'solar_irradiance' in df.columns else np.nan,
-                # Power
+                # Power (total = HP + PTC + blower fan)
                 'P_hvac_W': df['hvac_power'] if 'hvac_power' in df.columns else np.nan,
+                'P_hp_W': df['hp_power'] if 'hp_power' in df.columns else np.nan,
+                'P_blower_W': df['blower_power'] if 'blower_power' in df.columns else np.nan,
             })
             export_df.to_csv(csv_path, index=False)
             print(f"Raw data saved to: {csv_path}")
 
     return save_path
-
-
-def build_mpc_from_config(config: ScenarioConfig):
-    """
-    Build MPC controller from scenario configuration.
-
-    Uses simple Quadratic costs for reliable IPOPT convergence.
-    """
-
-    # Create WhiteBox predictors
-    wb_T_ptc = create_whitebox_T_ptc()
-    wb_T_vent = create_whitebox_T_vent(hvac_mode=config.hvac_mode)
-    wb_T_cabin = create_whitebox_T_cabin()
-    wb_CO2 = create_whitebox_CO2()
-
-    # Build objectives using simple Quadratic costs
-    objectives = []
-
-    # Temperature tracking
-    if config.weights.get('T_cabin', 0) > 0:
-        objectives.append(Objective(
-            feature=T_cabin,
-            cost=Quadratic(weight=config.weights['T_cabin'])
-        ))
-
-    if config.weights.get('T_vent', 0) > 0:
-        objectives.append(Objective(feature=T_vent, cost=Quadratic(weight=config.weights['T_vent'])))
-
-    # CO2 tracking
-    if config.weights.get('C_CO2', 0) > 0:
-        objectives.append(Objective(
-            feature=C_CO2,
-            cost=Quadratic(weight=config.weights['C_CO2'], norm=100.0)
-        ))
-
-    # Energy penalty
-    if config.weights.get('energy', 0) > 0:
-        objectives.append(Objective(
-            feature=u_hvac,
-            cost=Quadratic(weight=config.weights['energy'] * config.Q_hp_max / config.COP_nominal)
-        ))
-
-    # Smoothness: Control change penalties
-    mv_cfg = config.mv_config
-    if mv_cfg['u_hvac'].active:
-        objectives.append(Objective(feature=u_hvac_change, cost=Quadratic(weight=mv_cfg['u_hvac'].weight_change)))
-    if mv_cfg.get('u_ptc', MVConfig(active=False)).active:
-        objectives.append(Objective(feature=u_ptc_change, cost=Quadratic(weight=mv_cfg['u_ptc'].weight_change)))
-    if mv_cfg['u_blower'].active:
-        objectives.append(Objective(feature=u_blower_change, cost=Quadratic(weight=mv_cfg['u_blower'].weight_change)))
-    if mv_cfg['u_recirc'].active:
-        objectives.append(Objective(feature=u_recirc_change, cost=Quadratic(weight=mv_cfg['u_recirc'].weight_change)))
-
-    # Build constraints from config
-    constraints = []
-
-    # Control bounds
-    if mv_cfg['u_hvac'].active:
-        constraints.append(Constraint(feature=u_hvac, lb=mv_cfg['u_hvac'].lb, ub=mv_cfg['u_hvac'].ub))
-    if mv_cfg.get('u_ptc', MVConfig(active=False)).active:
-        constraints.append(Constraint(feature=u_ptc, lb=mv_cfg['u_ptc'].lb, ub=mv_cfg['u_ptc'].ub))
-    if mv_cfg['u_blower'].active:
-        constraints.append(Constraint(feature=u_blower, lb=mv_cfg['u_blower'].lb, ub=mv_cfg['u_blower'].ub))
-    if mv_cfg['u_recirc'].active:
-        constraints.append(Constraint(feature=u_recirc, lb=mv_cfg['u_recirc'].lb, ub=mv_cfg['u_recirc'].ub))
-
-    # CO2 hard constraint
-    constraints.append(Constraint(feature=C_CO2, lb=0, ub=config.CO2_limit))
-
-    # Create MPC controller
-    mpc = ModelPredictive(
-        step_size=one_minute,
-        nlp=NLP(
-            model=model,
-            N=20,
-            control_change_step=1,
-            objectives=objectives,
-            constraints=constraints,
-        ),
-        forecast_callback=system.get_forecast,
-        solution_plotter=mpc_plotter,
-        show_solution_plot=False,
-        save_solution_plot=False,
-        save_solution_data=False,
-    )
-
-    # Solver options
-    solver_options = {
-        "verbose": False,
-        "ipopt.print_level": 0,
-        "ipopt.max_iter": 1000,
-        "expand": True,
-    }
-
-    # Select predictors
-    predictors = [wb_T_vent, wb_T_cabin, wb_CO2]
-    if mv_cfg.get('u_ptc', MVConfig(active=False)).active:
-        predictors.insert(0, wb_T_ptc)
-
-    mpc.nlp.build(solver_options=solver_options, predictors=predictors)
-
-    return mpc
 
 
 def build_pid_from_config(config: ScenarioConfig):
@@ -269,8 +162,12 @@ def compute_metrics(df: pd.DataFrame, config: ScenarioConfig) -> dict:
         highway_mask = (df.index >= accel_end) & (df.index < highway_end)
         metrics['energy_highway_Wh'] = df.loc[highway_mask, 'hvac_power'].sum() * 60 / 3600
 
-        # Total energy
+        # Total energy (HP + PTC + blower fan)
         metrics['energy_total_Wh'] = df['hvac_power'].sum() * 60 / 3600
+        if 'hp_power' in df.columns:
+            metrics['energy_hp_Wh'] = df['hp_power'].sum() * 60 / 3600
+        if 'blower_power' in df.columns:
+            metrics['energy_blower_Wh'] = df['blower_power'].sum() * 60 / 3600
 
     # Temperature metrics
     T_target = 295.15  # 22C

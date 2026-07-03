@@ -85,13 +85,16 @@ T_mass = Controlled(
 T_mass_change = Connection(Change(base=T_mass))
 
 # CO2 concentration [ppm]
+# Economic band: the MPC objective penalizes CO2 above the soft target
+# (day_ub = 800 ppm, paper Eq. 14); the hard Pettenkofer limit (1200 ppm)
+# is enforced separately as an NLP constraint in the scenario scripts.
 C_CO2_economic = Economic(
     day_start=0,
     day_end=24,
-    day_lb=400,       # Slightly below ambient
-    day_ub=1000,      # ASHRAE recommended upper limit
+    day_lb=400,       # Slightly below ambient (never active, CO2 >= 420)
+    day_ub=800,       # Soft target: no penalty below 800 ppm
     night_lb=400,
-    night_ub=1200,    # Relaxed at night
+    night_ub=800,
 )
 
 C_CO2 = Controlled(
@@ -280,12 +283,13 @@ def radiator_efficiency(v):
     Radiator/condenser efficiency increases with airflow (vehicle speed).
     At standstill, only fan provides airflow (lower efficiency).
     Efficiency saturates at higher speeds.
+    Must match cabin_simulator._radiator_efficiency and the WhiteBox models!
     """
-    v_ref = 30.0  # Reference velocity [m/s] where efficiency is ~1
+    v_ref = 15.0  # Reference velocity [m/s]
     if _is_casadi(v):
-        return 0.6 + 0.4 * (1 - ca.exp(-v / v_ref))
+        return 0.5 + 0.5 * (1 - ca.exp(-v / v_ref))
     else:
-        return 0.6 + 0.4 * (1 - np.exp(-v / v_ref))
+        return 0.5 + 0.5 * (1 - np.exp(-v / v_ref))
 
 eta_radiator = Connection(Func(base=v_vehicle, func=radiator_efficiency, name="eta_radiator"))
 
