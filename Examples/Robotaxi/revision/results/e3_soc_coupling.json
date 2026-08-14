@@ -1,0 +1,44 @@
+{
+  "calibration": {
+    "E_usable_Wh": 60000.0,
+    "P_total_nominal_W": 6000.0,
+    "P_hvac_PID_mean_W": 933.1428960490576,
+    "P_base_W": 5066.8571039509425,
+    "consumption_Wh_per_km": 208.33333333333331
+  },
+  "MPC_coupled": {
+    "T_mean_C": 23.675148084677463,
+    "T_max_C": 25.08321799239843,
+    "T_min_C": 21.677768985378975,
+    "T_final_C": 25.058009189814413,
+    "T_max_dev_K": 3.0832179923984313,
+    "comfort_violation_Kmin": 62.214270394826826,
+    "energy_total_Wh": 923.3063746615712,
+    "energy_hp_Wh": 680.8853017902005,
+    "energy_blower_Wh": 242.42107287137082,
+    "energy_before_threshold_Wh": 488.4928437325576,
+    "energy_after_threshold_Wh": 434.8135309290138,
+    "u_hvac_mean": 0.44903582919781837,
+    "u_hvac_mean_before": 0.5069447419439066,
+    "u_hvac_mean_after": 0.39112691645173003,
+    "time_in_band_pct": 42.5,
+    "mode_switches": [
+      [
+        45.0,
+        0.12995619156783678,
+        0.0987394401268063
+      ]
+    ],
+    "energy_hvac_Wh": 923.3063746615712,
+    "soc_final": 0.017123783930595438
+  },
+  "comparison": {
+    "energy_hvac_PID_Wh": 1866.2857920981153,
+    "energy_hvac_MPC_Wh": 923.3063746615712,
+    "delta_E_Wh": 942.979417436544,
+    "soc_final_PID": 0.0014074603066530633,
+    "soc_final_MPC": 0.017123783930595438,
+    "range_extension_km": 4.526301203695405,
+    "driving_time_extension_min": 9.429794174365425
+  }
+}

@@ -77,13 +77,20 @@ def build_mpc_model(ptc_active: bool) -> Model:
     return Model(*features)
 
 
-def build_mpc_from_config(config: ScenarioConfig, weight_overrides: dict = None):
+def build_mpc_from_config(config: ScenarioConfig, weight_overrides: dict = None,
+                          forecast_callback=None, energy_costs: dict = None):
     """
     Build the MPC controller for a paper scenario.
 
     :param config: scenario configuration (MVs, weights, limits)
     :param weight_overrides: optional dict overriding config.weights
         (used by the S3 SOC wrapper to build comfort / saving mode NLPs)
+    :param forecast_callback: optional replacement for system.get_forecast
+        (used by the revision experiments: frozen forecast for the ablation,
+        biased forecast for the robustness tests)
+    :param energy_costs: optional dict {'u_hvac': Cost, 'u_blower': Cost}
+        replacing the default Quadratic energy costs (used by the
+        true-electrical-power objective experiment)
     """
 
     weights = dict(config.weights)
@@ -122,15 +129,16 @@ def build_mpc_from_config(config: ScenarioConfig, weight_overrides: dict = None)
         ))
 
     # Energy: electrical power of heat pump and blower fan
+    energy_costs = energy_costs or {}
     if weights.get('energy_hvac', 0) > 0:
         objectives.append(Objective(
             feature=u_hvac,
-            cost=Quadratic(weight=weights['energy_hvac']),
+            cost=energy_costs.get('u_hvac', Quadratic(weight=weights['energy_hvac'])),
         ))
     if weights.get('energy_blower', 0) > 0:
         objectives.append(Objective(
             feature=u_blower,
-            cost=Quadratic(weight=weights['energy_blower']),
+            cost=energy_costs.get('u_blower', Quadratic(weight=weights['energy_blower'])),
         ))
     if ptc_active and weights.get('energy_ptc', 0) > 0:
         objectives.append(Objective(
@@ -181,7 +189,7 @@ def build_mpc_from_config(config: ScenarioConfig, weight_overrides: dict = None)
             objectives=objectives,
             constraints=constraints,
         ),
-        forecast_callback=system.get_forecast,
+        forecast_callback=forecast_callback if forecast_callback is not None else system.get_forecast,
         solution_plotter=mpc_plotter,
         show_solution_plot=False,
         save_solution_plot=False,

@@ -1,0 +1,115 @@
+{
+  "nominal_savings_pct": 55.5,
+  "variants": [
+    {
+      "param": "alpha_plr",
+      "factor": 0.8,
+      "PID_energy_Wh": 572.102197422302,
+      "MPC_energy_Wh": 260.15069744695006,
+      "savings_pct": 54.527233312666745,
+      "PID_T_mean_C": 22.497740586736562,
+      "MPC_T_mean_C": 22.47359992287758,
+      "MPC_T_max_C": 25.835191659835118,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "alpha_plr",
+      "factor": 1.2,
+      "PID_energy_Wh": 572.102197422302,
+      "MPC_energy_Wh": 249.45744626347323,
+      "savings_pct": 56.39634887133038,
+      "PID_T_mean_C": 22.497740586736562,
+      "MPC_T_mean_C": 22.47359992287758,
+      "MPC_T_max_C": 25.835191659835118,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "UA",
+      "factor": 0.8,
+      "PID_energy_Wh": 564.2987905659817,
+      "MPC_energy_Wh": 248.5099513227139,
+      "savings_pct": 55.96128230693835,
+      "PID_T_mean_C": 22.489509003077906,
+      "MPC_T_mean_C": 22.44502450918226,
+      "MPC_T_max_C": 25.782391659835127,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "UA",
+      "factor": 1.2,
+      "PID_energy_Wh": 580.9711775654523,
+      "MPC_energy_Wh": 261.6293146260146,
+      "savings_pct": 54.96690288107462,
+      "PID_T_mean_C": 22.505972468512848,
+      "MPC_T_mean_C": 22.508660750695366,
+      "MPC_T_max_C": 25.88799165983511,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "m_dot_blower_max",
+      "factor": 0.8,
+      "PID_energy_Wh": 616.5441572681275,
+      "MPC_energy_Wh": 264.61911292685033,
+      "savings_pct": 57.08026589703441,
+      "PID_T_mean_C": 22.56579810290065,
+      "MPC_T_mean_C": 22.68253540630194,
+      "MPC_T_max_C": 25.834185550397592,
+      "MPC_time_in_band_pct": 83.33333333333334
+    },
+    {
+      "param": "m_dot_blower_max",
+      "factor": 1.2,
+      "PID_energy_Wh": 550.4435137115405,
+      "MPC_energy_Wh": 269.63135991231616,
+      "savings_pct": 51.01561682610429,
+      "PID_T_mean_C": 22.475052684357404,
+      "MPC_T_mean_C": 22.392330287887166,
+      "MPC_T_max_C": 25.836407164080185,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "C_mass",
+      "factor": 0.8,
+      "PID_energy_Wh": 571.3783010382183,
+      "MPC_energy_Wh": 254.24708840776097,
+      "savings_pct": 55.502844972274346,
+      "PID_T_mean_C": 22.49674411610748,
+      "MPC_T_mean_C": 22.469235145903156,
+      "MPC_T_max_C": 25.835191659835118,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "C_mass",
+      "factor": 1.2,
+      "PID_energy_Wh": 572.6466876283889,
+      "MPC_energy_Wh": 254.94095460727473,
+      "savings_pct": 55.48023587404122,
+      "PID_T_mean_C": 22.498528212929195,
+      "MPC_T_mean_C": 22.47676106162853,
+      "MPC_T_max_C": 25.835191659835118,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "h_conv",
+      "factor": 0.8,
+      "PID_energy_Wh": 566.0107723653992,
+      "MPC_energy_Wh": 250.1463970542545,
+      "savings_pct": 55.805364620734174,
+      "PID_T_mean_C": 22.493681802212055,
+      "MPC_T_mean_C": 22.408331592845403,
+      "MPC_T_max_C": 25.79679165983515,
+      "MPC_time_in_band_pct": 86.66666666666667
+    },
+    {
+      "param": "h_conv",
+      "factor": 1.2,
+      "PID_energy_Wh": 577.7800964470274,
+      "MPC_energy_Wh": 258.5788269666773,
+      "savings_pct": 55.246151856602665,
+      "PID_T_mean_C": 22.50071854656805,
+      "MPC_T_mean_C": 22.53303720965972,
+      "MPC_T_max_C": 25.873591659835142,
+      "MPC_time_in_band_pct": 86.66666666666667
+    }
+  ]
+}

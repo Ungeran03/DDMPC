@@ -1,0 +1,38 @@
+{
+  "S1_true_power": {
+    "T_at_boarding_C": 22.232172887145396,
+    "CO2_at_boarding": 420.0,
+    "T_overshoot_K": 0.24363388914542838,
+    "T_mean_C": 23.08645867981045,
+    "CO2_max": 813.1953887616041,
+    "CO2_mean": 679.5356435590451,
+    "energy_total_Wh": 275.13438406456817,
+    "energy_hp_Wh": 185.70876370869684,
+    "energy_blower_Wh": 89.42562035587135,
+    "energy_preconditioning_Wh": 69.94696924188268,
+    "time_in_band_pct": 80.0,
+    "u_hvac_mean": 0.5608357920214424,
+    "u_blower_mean": 0.811024040866723
+  },
+  "S2_true_power": {
+    "energy_city_Wh": 12.285508353001202,
+    "energy_accel_Wh": 23.950763527231704,
+    "energy_highway_Wh": 176.820156606467,
+    "energy_total_Wh": 254.61682317124783,
+    "energy_hp_Wh": 184.04724586633313,
+    "energy_blower_Wh": 70.5695773049147,
+    "T_mean_C": 22.473289183502157,
+    "T_max_C": 25.835191659835118,
+    "T_min_C": 21.871089948546,
+    "T_at_highway_start_C": 23.037011820719158,
+    "T_mean_deviation_K": 0.6044170924763629,
+    "T_max_deviation_K": 3.835191659835118,
+    "eta_radiator_city": 0.6417343447131054,
+    "eta_radiator_highway": 0.9055621985812191,
+    "CO2_max": 803.3945050186172,
+    "CO2_mean": 795.4805840729239,
+    "time_in_band_pct": 86.66666666666667,
+    "u_hvac_mean": 0.42001192902080947,
+    "u_blower_mean": 0.7512723747880076
+  }
+}

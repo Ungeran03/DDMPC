@@ -1,0 +1,63 @@
+{
+  "S1": {
+    "MPC_NF": {
+      "T_at_boarding_C": 22.23166942552666,
+      "CO2_at_boarding": 420.0,
+      "T_overshoot_K": 0.24149106953575483,
+      "T_mean_C": 23.08552947315775,
+      "CO2_max": 811.6657554171751,
+      "CO2_mean": 679.5040400384188,
+      "energy_total_Wh": 275.09515199019904,
+      "energy_hp_Wh": 185.628621274232,
+      "energy_blower_Wh": 89.46653071596701,
+      "energy_preconditioning_Wh": 69.94696657632718,
+      "time_in_band_pct": 80.0
+    }
+  },
+  "S2": {
+    "MPC_NF": {
+      "energy_city_Wh": 12.283529340613791,
+      "energy_accel_Wh": 23.952939626226264,
+      "energy_highway_Wh": 176.84786961078686,
+      "energy_total_Wh": 254.64319895179676,
+      "energy_hp_Wh": 184.08013025935693,
+      "energy_blower_Wh": 70.5630686924398,
+      "T_mean_C": 22.473580331383484,
+      "T_max_C": 25.835191659835118,
+      "T_min_C": 21.87119111496611,
+      "T_at_highway_start_C": 23.03701182061792,
+      "T_mean_deviation_K": 0.604125944531637,
+      "T_max_deviation_K": 3.835191659835118,
+      "eta_radiator_city": 0.6417343447131054,
+      "eta_radiator_highway": 0.9055621985812191,
+      "CO2_max": 803.7477156591474,
+      "CO2_mean": 795.2678146696196,
+      "time_in_band_pct": 86.66666666666667
+    }
+  },
+  "S3": {
+    "MPC_NF": {
+      "T_mean_C": 23.248435118159325,
+      "T_max_C": 25.025461967027184,
+      "T_min_C": 21.678399938832854,
+      "T_final_C": 25.02091592510834,
+      "T_max_dev_K": 3.0254619670271836,
+      "comfort_violation_Kmin": 45.77223134437861,
+      "energy_total_Wh": 951.6726984472467,
+      "energy_hp_Wh": 723.4671131151721,
+      "energy_blower_Wh": 228.20558533207443,
+      "energy_before_threshold_Wh": 540.2412532994286,
+      "energy_after_threshold_Wh": 411.4314451478179,
+      "u_hvac_mean": 0.473639566470481,
+      "u_hvac_mean_before": 0.5718426230767082,
+      "u_hvac_mean_after": 0.3754365098642541,
+      "time_in_band_pct": 55.833333333333336,
+      "mode_switches": [
+        [
+          61.0,
+          0.09833333333333334
+        ]
+      ]
+    }
+  }
+}
